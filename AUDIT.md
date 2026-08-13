@@ -26,6 +26,9 @@ python analysis/recompute_metrics.py --repo <main 分支的 checkout>
 | 5 | Table 4 声称用 37 窗口交集,实际报的是各方法自身全窗均值 | 已证实 | 方法间可比性 |
 | 6 | Hybrid-CASR 有三个结果文件,论文用了最高的 | 待查 | 效应量可信度 |
 | 7 | 季度窗口的基线 = Hybrid-CASR 双月的成绩 | 已证实 | 方法的贡献度 |
+| 8 | **Replay-3P 和 OLoRA 每窗口重建适配器,不是持续学习** | 已证实 | Discussion 4.2 两个核心论断 |
+| 9 | LB-CL 的实现里没有任何类别加权 | 已证实 | Table 2、方法描述 |
+| 10 | Hybrid-CASR 的 70/30 缓冲区划分在代码里不存在 | 已证实 | 方法描述 |
 
 ---
 
@@ -217,6 +220,116 @@ Contribution 2 和 Contribution 3 报的是同一个数字 0.667。
 
 ---
 
+## 8. Replay-3P 和 OLoRA 结构上不是持续学习 【已证实】
+
+统计每个 notebook 里适配器的处理方式:
+
+| 方法 | `PeftModel.from_pretrained`(加载上一窗口) | 实际行为 |
+|---|---|---|
+| Hybrid-CASR | 1 | 继承适配器 ✓ |
+| LB-CL | 1 | 继承适配器 ✓ |
+| window-only 系列 | 1 | 继承适配器 ✓ |
+| **Replay-3P** | **0** | **每窗口 `get_peft_model` 新建** |
+| **OLoRA** | **0** | **每窗口 `get_peft_model` 新建** |
+
+代码里的注释自己写明了:
+
+```python
+# 2month_OLoRA.py:182
+# Initialize fresh base model for each window (not continual)
+model = get_peft_model(base_model, peft_config)
+```
+
+```python
+# 2month-Replay3p.py:133
+# Load fresh base model for each window
+model = get_peft_model(base_model, peft_config)
+```
+
+**这两个方法从不携带任何跨窗口学到的参数。** 每个窗口都从随机初始化的适配器重新开始。
+OLoRA 只是把这个新适配器对历史方向做了正交化,Replay-3P 只是多喂了两个窗口的原始数据。
+
+### 影响:Discussion 4.2 的两个论断都是误归因
+
+论文写道:
+
+> "Replay-3P (F1 = 0.622) underperforms despite retaining more historical data.
+> This contradicts the assumption that larger buffers monotonically improve performance
+> and suggests that, in rapidly evolving domains, controlled forgetting can be more useful
+> than comprehensive retention."
+
+> "OLoRA's relatively poor performance (F1 = 0.599) raises questions about the applicability
+> of strict orthogonality constraints ... they appear overly rigid when vulnerability types
+> overlap across time."
+
+两个"反直觉发现"都有一个平凡得多的解释:**这两个方法把每个窗口学到的东西全扔了。**
+它们垫底不是因为缓冲区太大或正交约束太死,而是因为它们根本没在做持续学习。
+
+而且 Replay-3P 与 Hybrid-CASR 的对比同时混淆了两个变量:
+
+| | 适配器 | 回放预算 |
+|---|---|---|
+| Hybrid-CASR | 继承 | 125 条采样 |
+| Replay-3P | **重建** | 两个完整窗口 |
+
+论文把差异全部归给"回放预算",但"适配器是否继承"这个变量没有被控制,而且几乎肯定是主因。
+
+**这是扩展版必须做的一个实验**,而且很便宜:把这两个方法改成继承适配器再跑一遍。
+`experiments/train.py --method olora --adapter inherit` 就能跑。三种可能的结果,
+每一种都是可发表的发现:
+
+- OLoRA 继承后追上来了 → 原结论错误,正交约束本身没问题
+- 仍然垫底 → 原结论成立,但**这次有了对照**,论证才站得住
+- 介于两者之间 → 可以把两个因素的贡献拆开
+
+---
+
+## 9. LB-CL 没有类别加权 【已证实】
+
+论文 Table 2 和 2.3.3 节:
+
+> "LB-CL (Label-Balanced Continual LoRA) modifies the training objective to account for
+> class imbalance ... Class-weighted cross-entropy with weights inversely proportional to
+> class frequency within each window is applied."
+
+在 `2month__LB_CL.py` 中检索 `class_weight` / `CrossEntropyLoss` / `weight=` / `compute_loss`:
+**命中 0 处。** 没有任何自定义损失函数,用的是 `Trainer` 的默认交叉熵。
+
+实际实现的是 **QR 分解正交初始化的 LoRA**:
+
+```python
+# 2month__LB_CL.py:69
+# === Custom LB-CL LoRA module with orthogonal initialization ===
+# ... QR decomposition gives us orthogonal matrix Q
+# 148: Main training loop (no replay, using LB-CL orthogonal LoRA)
+```
+
+也就是说 **LB-CL 和 OLoRA 都是正交类方法**,而论文把它们描述成两条不同的技术路线
+(类别加权 vs 正交约束)。Table 2 的"Memory requirements: No extra memory beyond model
+parameters"倒是碰巧对的,但机制描述完全不符。
+
+---
+
+## 10. Hybrid-CASR 的 70/30 划分不存在 【已证实】
+
+论文 2.3.3 节:
+
+> "The replay buffer is partitioned such that 70% of slots are filled by high-uncertainty
+> examples selected by these CASR criteria, and the remaining 30% are drawn uniformly to
+> maintain coverage."
+
+实际代码(`select_topk_uncertain_balanced`)是:按类别各取熵最高的 `k//2` 条。
+随机抽样**只在某一类样本数不足 `k//2` 时才触发**作为补足手段。正常情况下
+100% 由熵选出,不存在 70/30。
+
+论文 2.3.3 还提到 CASR 用 `τ = 0.7` 的置信度阈值;实现里用的是熵排序取 top-k,
+没有阈值。
+
+这一条不影响结论(方法确实是"不确定性 + 类别均衡"),但方法描述需要按实现改写,
+否则别人复现不出来。
+
+---
+
 ## 建议的处理顺序
 
 **扩展版必须做的:**
@@ -230,6 +343,10 @@ Contribution 2 和 Contribution 3 报的是同一个数字 0.667。
 4. **跑多种子。** 三份结果文件的离散度说明单次运行不足以支撑 +0.016 的结论。
 5. **补季度/半年粒度下的全方法对比**,正面回应第 7 条。这是审稿人最可能提的问题,
    而且你已有基础设施。
+6. **把 Replay-3P 和 OLoRA 改成继承适配器重跑**(第 8 条),并据此重写 Discussion 4.2。
+   这是现有发现里最便宜、回报最高的一个实验。
+7. **按实际实现重写 Table 2 和 2.3.3 节的方法描述**(第 9、10 条)。LB-CL 不是类别加权,
+   Hybrid-CASR 没有 70/30,CASR 没有 τ=0.7 阈值。
 
 **关于会议版已发表的 p=0.026:** 它是既成事实,扩展版引用时不改。但扩展版**不应
 在新分析里延续这个错误口径**——正确做法是说明两版口径不同,并给出修正后的数字。

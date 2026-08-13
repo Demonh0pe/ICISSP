@@ -1,0 +1,171 @@
+{
+ "_source": "result/metrics_log_hybrid_casr_balanced__RUN_20250821-220210.csv (n0_current/n1_current)",
+ "_note": "Per-window class counts after the notebooks' filter: len(prompt)>10 and response in {VULNERABLE,FIXED}. VULNERABLE=label 0, FIXED=label 1.",
+ "_granularity": "2-month",
+ "windows": {
+  "2018_M01-02": {
+   "vulnerable": 186,
+   "fixed": 206
+  },
+  "2018_M03-04": {
+   "vulnerable": 218,
+   "fixed": 252
+  },
+  "2018_M05-06": {
+   "vulnerable": 314,
+   "fixed": 348
+  },
+  "2018_M07-08": {
+   "vulnerable": 266,
+   "fixed": 318
+  },
+  "2018_M09-10": {
+   "vulnerable": 170,
+   "fixed": 196
+  },
+  "2018_M11-12": {
+   "vulnerable": 173,
+   "fixed": 213
+  },
+  "2019_M01-02": {
+   "vulnerable": 152,
+   "fixed": 184
+  },
+  "2019_M03-04": {
+   "vulnerable": 178,
+   "fixed": 208
+  },
+  "2019_M05-06": {
+   "vulnerable": 163,
+   "fixed": 193
+  },
+  "2019_M07-08": {
+   "vulnerable": 340,
+   "fixed": 396
+  },
+  "2019_M09-10": {
+   "vulnerable": 338,
+   "fixed": 372
+  },
+  "2019_M11-12": {
+   "vulnerable": 310,
+   "fixed": 364
+  },
+  "2020_M01-02": {
+   "vulnerable": 287,
+   "fixed": 315
+  },
+  "2020_M03-04": {
+   "vulnerable": 312,
+   "fixed": 362
+  },
+  "2020_M05-06": {
+   "vulnerable": 334,
+   "fixed": 397
+  },
+  "2020_M07-08": {
+   "vulnerable": 220,
+   "fixed": 232
+  },
+  "2020_M09-10": {
+   "vulnerable": 328,
+   "fixed": 380
+  },
+  "2020_M11-12": {
+   "vulnerable": 316,
+   "fixed": 380
+  },
+  "2021_M01-02": {
+   "vulnerable": 276,
+   "fixed": 324
+  },
+  "2021_M03-04": {
+   "vulnerable": 414,
+   "fixed": 488
+  },
+  "2021_M05-06": {
+   "vulnerable": 411,
+   "fixed": 607
+  },
+  "2021_M07-08": {
+   "vulnerable": 451,
+   "fixed": 597
+  },
+  "2021_M09-10": {
+   "vulnerable": 458,
+   "fixed": 514
+  },
+  "2021_M11-12": {
+   "vulnerable": 600,
+   "fixed": 686
+  },
+  "2022_M01-02": {
+   "vulnerable": 960,
+   "fixed": 1110
+  },
+  "2022_M03-04": {
+   "vulnerable": 820,
+   "fixed": 932
+  },
+  "2022_M05-06": {
+   "vulnerable": 747,
+   "fixed": 868
+  },
+  "2022_M07-08": {
+   "vulnerable": 595,
+   "fixed": 671
+  },
+  "2022_M09-10": {
+   "vulnerable": 654,
+   "fixed": 772
+  },
+  "2022_M11-12": {
+   "vulnerable": 988,
+   "fixed": 1122
+  },
+  "2023_M01-02": {
+   "vulnerable": 986,
+   "fixed": 1094
+  },
+  "2023_M03-04": {
+   "vulnerable": 952,
+   "fixed": 1080
+  },
+  "2023_M05-06": {
+   "vulnerable": 652,
+   "fixed": 764
+  },
+  "2023_M07-08": {
+   "vulnerable": 669,
+   "fixed": 740
+  },
+  "2023_M09-10": {
+   "vulnerable": 612,
+   "fixed": 692
+  },
+  "2023_M11-12": {
+   "vulnerable": 743,
+   "fixed": 839
+  },
+  "2024_M01-02": {
+   "vulnerable": 755,
+   "fixed": 847
+  },
+  "2024_M03-04": {
+   "vulnerable": 1065,
+   "fixed": 1148
+  },
+  "2024_M05-06": {
+   "vulnerable": 795,
+   "fixed": 901
+  },
+  "2024_M07-08": {
+   "vulnerable": 671,
+   "fixed": 721
+  },
+  "2024_M09-10": {
+   "vulnerable": 349,
+   "fixed": 390
+  }
+ }
+}
