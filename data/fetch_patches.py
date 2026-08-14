@@ -180,20 +180,41 @@ def main():
     # ID-based filter would drop patches the study needs.
     years = {}
     if args.nvd_dir:
-        for path in sorted(glob.glob(os.path.join(args.nvd_dir, "**", "*.json"), recursive=True)):
+        files = sorted(glob.glob(os.path.join(args.nvd_dir, "**", "*.json"), recursive=True))
+        # The feeds run to ~1 GB and take minutes to parse, so the result is
+        # cached: without it every rerun repeats the scan in silence and looks
+        # like a hang.
+        cache_path = os.path.join(args.nvd_dir, ".disclosure_years.json")
+        stamp = str(sorted((os.path.basename(f), os.path.getsize(f)) for f in files))
+        if os.path.exists(cache_path):
             try:
-                blob = json.load(open(path, encoding="utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            for item in blob.get("CVE_Items", []):
+                cached = json.load(open(cache_path, encoding="utf-8"))
+                if cached.get("stamp") == stamp:
+                    years = {k: int(v) for k, v in cached["years"].items()}
+                    print(f"{len(years)} disclosure years (cached)")
+            except (json.JSONDecodeError, KeyError, ValueError):
+                pass
+        if not years:
+            print(f"parsing {len(files)} NVD feed file(s) -- about a minute for the full set")
+            for n, path in enumerate(files, 1):
+                print(f"  [{n}/{len(files)}] {os.path.basename(path)}", flush=True)
                 try:
-                    cid = item["cve"]["CVE_data_meta"]["ID"]
-                    pub = item.get("publishedDate", "")[:4]
-                except (KeyError, TypeError):
+                    blob = json.load(open(path, encoding="utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
-                if pub.isdigit() and (cid not in years or int(pub) < years[cid]):
-                    years[cid] = int(pub)
-        print(f"{len(years)} disclosure years loaded")
+                for item in blob.get("CVE_Items", []):
+                    try:
+                        cid = item["cve"]["CVE_data_meta"]["ID"]
+                        pub = item.get("publishedDate", "")[:4]
+                    except (KeyError, TypeError):
+                        continue
+                    if pub.isdigit() and (cid not in years or int(pub) < years[cid]):
+                        years[cid] = int(pub)
+            try:
+                json.dump({"stamp": stamp, "years": years}, open(cache_path, "w"))
+            except OSError:
+                pass
+            print(f"{len(years)} disclosure years loaded")
 
     entries = json.load(open(args.links, encoding="utf-8"))
     tasks = []

@@ -73,7 +73,9 @@ def load_dates(nvd_dir):
     """
     dates = {}
     files = sorted(glob.glob(os.path.join(nvd_dir, "**", "*.json"), recursive=True))
-    for path in files:
+    print(f"parsing {len(files)} NVD feed file(s) -- about a minute for the full set")
+    for n, path in enumerate(files, 1):
+        print(f"  [{n}/{len(files)}] {os.path.basename(path)}", flush=True)
         try:
             blob = json.load(open(path, encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
