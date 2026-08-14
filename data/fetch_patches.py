@@ -171,6 +171,14 @@ def main():
     if (args.min_year or args.max_year) and not args.nvd_dir:
         ap.error("--min-year/--max-year need --nvd-dir to read disclosure dates")
 
+    # This is meant to be run under nohup, where stdout is a file and therefore
+    # block-buffered: without this every progress line sits in the buffer and
+    # the log looks empty while the run is in fact working.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
+
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     check_token(token, args.timeout)
     os.makedirs(args.out, exist_ok=True)
