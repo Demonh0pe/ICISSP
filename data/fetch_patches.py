@@ -23,6 +23,7 @@ those are recorded in fetch_failures.json rather than retried forever.
 
 import argparse
 import concurrent.futures
+import glob
 import json
 import os
 import random
@@ -120,23 +121,64 @@ def main():
     ap.add_argument("--max-bytes", type=int, default=5_000_000,
                     help="skip enormous patches (vendored trees, generated code); 0 disables")
     ap.add_argument("--limit", type=int, help="stop after N downloads (for a trial run)")
+    ap.add_argument("--nvd-dir", help="NVD feeds, needed by --min-year/--max-year")
+    ap.add_argument("--min-year", type=int,
+                    help="skip CVEs disclosed before this year (requires --nvd-dir)")
+    ap.add_argument("--max-year", type=int,
+                    help="skip CVEs disclosed after this year (requires --nvd-dir)")
     args = ap.parse_args()
+
+    if (args.min_year or args.max_year) and not args.nvd_dir:
+        ap.error("--min-year/--max-year need --nvd-dir to read disclosure dates")
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     print("token: " + ("set" if token else
                        "NOT SET -- expect ~60 requests/hour, which will not finish"))
     os.makedirs(args.out, exist_ok=True)
 
+    # Year filtering uses disclosure date, never the CVE ID or feed filename:
+    # nvdcve-1.1-2008.json contains entries disclosed as late as 2023, so an
+    # ID-based filter would drop patches the study needs.
+    years = {}
+    if args.nvd_dir:
+        for path in sorted(glob.glob(os.path.join(args.nvd_dir, "**", "*.json"), recursive=True)):
+            try:
+                blob = json.load(open(path, encoding="utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            for item in blob.get("CVE_Items", []):
+                try:
+                    cid = item["cve"]["CVE_data_meta"]["ID"]
+                    pub = item.get("publishedDate", "")[:4]
+                except (KeyError, TypeError):
+                    continue
+                if pub.isdigit() and (cid not in years or int(pub) < years[cid]):
+                    years[cid] = int(pub)
+        print(f"{len(years)} disclosure years loaded")
+
     entries = json.load(open(args.links, encoding="utf-8"))
     tasks = []
+    skipped_year = skipped_undated = 0
     for entry in entries:
         cve_id = entry["cve_id"].replace(":", "-")
+        if args.min_year or args.max_year:
+            y = years.get(entry["cve_id"]) or years.get(cve_id)
+            if y is None:
+                # No date means it cannot be placed in a window later either.
+                skipped_undated += 1
+                continue
+            if (args.min_year and y < args.min_year) or (args.max_year and y > args.max_year):
+                skipped_year += 1
+                continue
         for i, link in enumerate(entry.get("github_links", [])):
             if parse_commit(link):
                 tasks.append((cve_id, i, link))
     # Deterministic order so reruns are comparable.
     tasks.sort()
     print(f"{len(entries)} CVE entries -> {len(tasks)} commit links")
+    if skipped_year or skipped_undated:
+        print(f"  skipped {skipped_year} CVE(s) outside the year range, "
+              f"{skipped_undated} with no disclosure date")
 
     failures_path = os.path.join(os.path.dirname(os.path.abspath(args.out)),
                                  "fetch_failures.json")
