@@ -59,6 +59,46 @@ def fetch(url, token, timeout):
         return resp.read().decode("utf-8", "replace")
 
 
+def check_token(token, timeout):
+    """Fail before the run, not 24000 doomed requests into it.
+
+    A bad token is not distinguishable from a slow network once downloads are
+    under way -- every task just retries and errors -- so the limit is read up
+    front and a rejected credential is fatal.
+    """
+    if not token:
+        print("token: NOT SET -- ~60 requests/hour, which will not finish.")
+        print("  Set GITHUB_TOKEN and rerun; downloads already on disk are kept.")
+        return
+    # A pasted-literally placeholder can still carry a real-looking prefix, so
+    # check the body too: real tokens are ASCII alphanumerics and underscores.
+    if not token.isascii() or not re.fullmatch(r"[A-Za-z0-9_]{20,}", token):
+        sys.exit(f"GITHUB_TOKEN is not a valid token: {token[:12]!r}...\n"
+                 "  A placeholder pasted literally from instructions will do this.\n"
+                 "  Re-export the real value and rerun.")
+    if not token.startswith(("ghp_", "github_pat_", "gho_", "ghs_")):
+        print(f"token: unfamiliar prefix {token.split('_')[0]!r}; continuing")
+    try:
+        body = fetch("https://api.github.com/rate_limit", token, timeout)
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            sys.exit("GITHUB_TOKEN was rejected (HTTP 401). Generate a new one at "
+                     "https://github.com/settings/tokens and re-export it.")
+        print(f"could not verify token (HTTP {e.code}); continuing")
+        return
+    except Exception as e:
+        print(f"could not verify token ({type(e).__name__}); continuing")
+        return
+    try:
+        core = json.loads(body)["resources"]["core"]
+        print(f"token: valid, {core['remaining']}/{core['limit']} requests remaining this hour")
+        if core["limit"] < 1000:
+            print("  WARNING: limit under 1000/hour -- this token is not raising the "
+                  "anonymous cap. Check that it is valid and not expired.")
+    except (json.JSONDecodeError, KeyError):
+        print("token: accepted")
+
+
 def download_one(task, args, token, state):
     """Returns one of: cached | ok | gone | error."""
     cve_id, index, url = task
@@ -132,8 +172,7 @@ def main():
         ap.error("--min-year/--max-year need --nvd-dir to read disclosure dates")
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    print("token: " + ("set" if token else
-                       "NOT SET -- expect ~60 requests/hour, which will not finish"))
+    check_token(token, args.timeout)
     os.makedirs(args.out, exist_ok=True)
 
     # Year filtering uses disclosure date, never the CVE ID or feed filename:
