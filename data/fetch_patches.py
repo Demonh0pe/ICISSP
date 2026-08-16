@@ -59,6 +59,42 @@ def fetch(url, token, timeout):
         return resp.read().decode("utf-8", "replace")
 
 
+def is_rate_limited(err):
+    """Distinguish a throttle from a plain 403.
+
+    GitHub returns 403 both for exhausted quota and for genuinely forbidden
+    content; only the former should be waited out.
+    """
+    if err.code == 429:
+        return True
+    if err.headers.get("X-RateLimit-Remaining") == "0":
+        return True
+    if err.headers.get("Retry-After"):
+        return True
+    return "rate limit" in (err.headers.get("X-GitHub-Message") or "").lower()
+
+
+def rate_limit_wait(err, cap=3900):
+    """Seconds to wait, from Retry-After or X-RateLimit-Reset.
+
+    Falls back to a minute when GitHub says only that the limit was hit; the cap
+    is just over an hour, the length of the primary quota window.
+    """
+    retry_after = err.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return min(cap, max(1, int(retry_after)))
+        except ValueError:
+            pass
+    reset = err.headers.get("X-RateLimit-Reset")
+    if reset:
+        try:
+            return min(cap, max(1, int(reset) - int(time.time()) + 2))
+        except ValueError:
+            pass
+    return 60
+
+
 def check_token(token, timeout):
     """Fail before the run, not 24000 doomed requests into it.
 
@@ -112,7 +148,9 @@ def download_one(task, args, token, state):
         return "cached", None
 
     api = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}"
-    for attempt in range(args.retries):
+    attempt = 0
+    rate_waits = 0
+    while attempt < args.retries and rate_waits <= args.max_rate_waits:
         try:
             body = fetch(api, token, args.timeout)
             if args.max_bytes and len(body.encode()) > args.max_bytes:
@@ -123,30 +161,34 @@ def download_one(task, args, token, state):
             os.replace(tmp, path)
             return "ok", None
         except urllib.error.HTTPError as e:
-            # 404/451 are permanent: repo deleted, made private, or DMCA'd.
+            # 404/410/451: repo deleted, made private, or taken down. Permanent.
             if e.code in (404, 410, 451):
                 return "gone", f"HTTP {e.code}"
-            if e.code in (403, 429):
-                # Secondary rate limit. Honour Retry-After when present.
-                wait = int(e.headers.get("Retry-After") or 0) or min(60, 2 ** attempt * 5)
-                reset = e.headers.get("X-RateLimit-Remaining")
-                if reset == "0":
-                    with _print_lock:
-                        if not state["warned"]:
-                            state["warned"] = True
-                            print("\n  rate limit reached; sleeping. Set GITHUB_TOKEN "
-                                  "if you have not." if not token else
-                                  "\n  rate limit reached; sleeping.")
+            if e.code in (403, 429) and is_rate_limited(e):
+                # A rate-limit pause is not a failed attempt. Counting it as one
+                # burned the whole retry budget in ~35s while GitHub's window
+                # runs for minutes to an hour, so every in-flight task failed
+                # each time the limit was hit.
+                rate_waits += 1
+                wait = rate_limit_wait(e)
+                with _print_lock:
+                    if not state["warned"]:
+                        state["warned"] = True
+                        print(f"\n  rate limit reached; waiting {wait:.0f}s for reset"
+                              + ("" if token else " (no token: the cap is ~60/hour)"))
                 time.sleep(wait + random.uniform(0, 2))
                 continue
-            if attempt == args.retries - 1:
+            attempt += 1
+            if attempt >= args.retries:
                 return "error", f"HTTP {e.code}"
             time.sleep(2 ** attempt)
         except Exception as e:  # timeouts, DNS, reset connections
-            if attempt == args.retries - 1:
+            attempt += 1
+            if attempt >= args.retries:
                 return "error", f"{type(e).__name__}: {e}"
             time.sleep(2 ** attempt + random.uniform(0, 1))
-    return "error", "retries exhausted"
+    return "error", "rate-limit waits exhausted" if rate_waits > args.max_rate_waits \
+        else "retries exhausted"
 
 
 def main():
@@ -156,7 +198,10 @@ def main():
     ap.add_argument("--out", required=True, help="directory for .patch files")
     ap.add_argument("--workers", type=int, default=4,
                     help="keep this low; GitHub throttles aggressive clients")
-    ap.add_argument("--retries", type=int, default=4)
+    ap.add_argument("--retries", type=int, default=4,
+                    help="attempts per task for real errors; rate-limit waits do not count")
+    ap.add_argument("--max-rate-waits", type=int, default=6,
+                    help="how many rate-limit windows one task may wait out")
     ap.add_argument("--timeout", type=int, default=30)
     ap.add_argument("--max-bytes", type=int, default=5_000_000,
                     help="skip enormous patches (vendored trees, generated code); 0 disables")
