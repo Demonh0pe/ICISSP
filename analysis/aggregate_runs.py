@@ -53,6 +53,18 @@ def load(path):
     return d
 
 
+def label_methods(d):
+    """Qualify method names with the backbone when more than one is present.
+
+    Otherwise the same method run on two models collapses into one group and
+    the cross-architecture comparison silently averages the two together.
+    """
+    if "model" in d.columns and d["model"].nunique(dropna=True) > 1:
+        d = d.copy()
+        d["method"] = d["method"].astype(str) + " @" + d["model"].astype(str)
+    return d
+
+
 def summarise(fw, metric):
     """Per method: seed count, window count, mean, window sd, seed sd."""
     rows = []
@@ -78,22 +90,36 @@ def window_means(fw, metric):
 
 
 def compare(wm, baseline, metric):
-    if baseline not in wm:
-        return None
-    base = wm[baseline]
+    """Each method against the baseline, paired by window.
+
+    With more than one backbone present, every method is compared against the
+    baseline *on its own backbone*. Comparing a Qwen method against a phi-2
+    baseline would fold the architecture gap into every row and answer no
+    question; what the study asks is whether the ordering holds within a model.
+    """
+    def base_for(method):
+        if " @" in method:
+            same = f"{baseline.split(' @')[0]} @{method.split(' @', 1)[1]}"
+            if same in wm:
+                return same
+        return baseline if baseline in wm else None
+
     rows = []
     for method, series in wm.items():
-        if method == baseline:
+        b = base_for(method)
+        if b is None or method == b:
             continue
-        joined = pd.concat([series, base], axis=1, join="inner").dropna()
+        joined = pd.concat([series, wm[b]], axis=1, join="inner").dropna()
         if len(joined) < 5:
             continue
         x, y = joined.iloc[:, 0], joined.iloc[:, 1]
         p = np.nan
         if wilcoxon is not None and not np.allclose(x, y):
             p = wilcoxon(x, y).pvalue
-        rows.append({"method": method, "n_windows": len(joined),
+        rows.append({"method": method, "baseline": b, "n_windows": len(joined),
                      "delta": x.mean() - y.mean(), "p": p})
+    if not rows:
+        return None
     return pd.DataFrame(rows).sort_values("delta", ascending=False).reset_index(drop=True)
 
 
@@ -173,7 +199,7 @@ def main():
                     help="restrict to one window width (default: all present)")
     args = ap.parse_args()
 
-    d = pd.concat([load(p) for p in args.metrics], ignore_index=True)
+    d = label_methods(pd.concat([load(p) for p in args.metrics], ignore_index=True))
     if args.granularity and "granularity" in d.columns:
         d = d[d["granularity"] == args.granularity]
     if d.empty:
@@ -199,19 +225,33 @@ def main():
         print(f"\nonly one seed for: {', '.join(single)} -- no seed variance available")
 
     wm = window_means(fw, args.metric)
-    comparison = compare(wm, args.baseline, args.metric)
+    baseline = args.baseline
+    if baseline not in wm:
+        cands = [k for k in wm if k.split(" @")[0] == baseline]
+        if len(cands) == 1:
+            baseline = cands[0]
+        elif not cands:
+            print(f"\nbaseline '{baseline}' not among {sorted(wm)}")
+        # More than one candidate is the normal cross-backbone case: compare()
+        # pairs each method with the baseline on its own backbone.
+    comparison = compare(wm, baseline, args.metric)
     if comparison is None:
-        print(f"\nbaseline '{args.baseline}' not in these runs; skipping comparisons")
+        print(f"\nbaseline '{baseline}' not in these runs; skipping comparisons")
     else:
-        print(f"\nPaired Wilcoxon vs {args.baseline}, on per-window means across seeds:")
+        multi = comparison["baseline"].nunique() > 1
+        print(f"\nPaired Wilcoxon on per-window means across seeds"
+              + (", each vs the baseline on its own backbone:" if multi
+                 else f" vs {baseline}:"))
+        width = max(len(str(m)) for m in comparison["method"])
         for r in comparison.itertuples():
             p = "n/a" if np.isnan(r.p) else f"{r.p:.4f}"
             star = "*" if (not np.isnan(r.p) and r.p < 0.05) else " "
-            print(f"  {r.method:16s} n={r.n_windows:3d}  d={r.delta:+.4f}  p={p}{star}")
+            vs = f"  vs {r.baseline}" if multi else ""
+            print(f"  {r.method:{width}s} n={r.n_windows:3d}  d={r.delta:+.4f}  p={p}{star}{vs}")
 
         # The comparison worth stating plainly: an effect smaller than the
         # spread between seeds of the same configuration is not an effect.
-        base_row = summary[summary["method"] == args.baseline]
+        base_row = summary[summary["method"] == baseline]
         if not base_row.empty and not np.isnan(base_row["seed_sd"].iloc[0]):
             base_sd = float(base_row["seed_sd"].iloc[0])
             weak = [r.method for r in comparison.itertuples() if abs(r.delta) < base_sd]
@@ -228,8 +268,8 @@ def main():
         ibr.round(4).to_csv(os.path.join(args.out, "ibr.csv"))
 
     print("\nwriting:")
-    fig_seed_spread(summary, args.out, args.metric, args.baseline)
-    latex(summary, comparison, args.out, args.metric, args.baseline)
+    fig_seed_spread(summary, args.out, args.metric, baseline)
+    latex(summary, comparison, args.out, args.metric, baseline)
     summary.to_csv(os.path.join(args.out, "summary_multiseed.csv"), index=False)
     print(f"  summary_multiseed.csv\n\n-> {args.out}/")
 

@@ -20,7 +20,7 @@ BACKWARD_LAGS = (1, 3, 5, 6)
 # Written per evaluation. Unlike the original logs this records both classes and
 # the true macro average, so no downstream step has to guess which F1 it holds.
 METRIC_FIELDS = [
-    "method", "seed", "granularity", "train_window", "eval_window", "direction",
+    "method", "model", "seed", "granularity", "train_window", "eval_window", "direction",
     "accuracy",
     "macro_f1", "f1_vulnerable", "f1_fixed",
     "precision_vulnerable", "recall_vulnerable",

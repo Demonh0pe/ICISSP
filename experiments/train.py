@@ -41,6 +41,7 @@ import csv
 import gc
 import json
 import os
+import re
 import sys
 import time
 
@@ -256,7 +257,11 @@ def main():
     if args.limit_windows:
         windows = windows[: args.limit_windows]
 
-    run = f"{args.method}_g{args.granularity}m_seed{args.seed}"
+    # The model belongs in the run name: without it, the same method on two
+    # backbones writes to one directory, and the second run overwrites the
+    # first's adapters and config while the chain is still being read.
+    model_tag = re.sub(r"[^0-9A-Za-z.-]+", "-", os.path.basename(args.model.rstrip("/")))
+    run = f"{args.method}_{model_tag}_g{args.granularity}m_seed{args.seed}"
     if args.adapter:
         run += f"_adapter-{args.adapter}"
     out_dir = os.path.join(args.out, run)
@@ -402,7 +407,8 @@ def main():
         def evaluate(ds, eval_window, direction):
             pred = trainer.predict(ds)
             m = compute_metrics(pred.label_ids, pred.predictions.argmax(-1))
-            metrics.write(method=args.method, seed=args.seed, granularity=args.granularity,
+            metrics.write(method=args.method, model=model_tag, seed=args.seed,
+                          granularity=args.granularity,
                           train_window=train_tag, eval_window=eval_window,
                           direction=direction, n_train=len(train_ds), n_replay=n_replay, **m)
             return m
