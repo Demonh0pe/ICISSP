@@ -72,6 +72,12 @@ def parse_args():
                    help="fp32 matches the published runs; bf16 is faster but not "
                         "numerically identical, so do not mix them within a comparison")
     p.add_argument("--no-backward", action="store_true", help="skip backward retention eval")
+    p.add_argument("--group-by-length", action="store_true",
+                   help="batch samples of similar length together. Lengths here are "
+                        "very skewed (median 124 tokens, 21%% over the 512 cap), so a "
+                        "random batch of 32 almost always contains one long sample and "
+                        "pads the whole batch to 512. Grouping keeps the numerics "
+                        "identical -- only batch composition changes.")
     p.add_argument("--pad-to-max", action="store_true",
                    help="pad every sample to --max-length as the notebooks did; slower, "
                         "identical results")
@@ -369,6 +375,7 @@ def main():
                 # indistinguishable from a hang.
                 logging_strategy="steps", logging_steps=10,
                 report_to="none", fp16=False, bf16=(args.dtype == "bf16"),
+                group_by_length=args.group_by_length,
                 seed=args.seed, disable_tqdm=args.quiet),
             train_dataset=train_ds, eval_dataset=eval_ds,
             data_collator=collator)
