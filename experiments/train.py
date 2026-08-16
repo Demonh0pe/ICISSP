@@ -76,8 +76,10 @@ def parse_args():
                    help="pad every sample to --max-length as the notebooks did; slower, "
                         "identical results")
     p.add_argument("--no-gradient-checkpointing", action="store_true",
-                   help="trade memory for speed; phi-2 at batch 32 peaks near 22 of 32 GB "
-                        "with checkpointing on, so there is room")
+                   help="trade memory for speed. The ~22 GB peak seen with phi-2 at "
+                        "batch 32 is the checkpointed figure -- turning this off keeps "
+                        "every layer's activations and OOMs a 32 GB card. Only useful "
+                        "with a much smaller model or batch size.")
     p.add_argument("--keep-adapters", action="store_true",
                    help="keep every window's adapter (needed to resume; uses disk)")
     p.add_argument("--limit-windows", type=int, help="stop after N windows (debugging)")
