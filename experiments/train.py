@@ -375,7 +375,9 @@ def main():
                 # indistinguishable from a hang.
                 logging_strategy="steps", logging_steps=10,
                 report_to="none", fp16=False, bf16=(args.dtype == "bf16"),
-                group_by_length=args.group_by_length,
+                # transformers 5 replaced the group_by_length flag with this.
+                **({"train_sampling_strategy": "group_by_length"}
+                   if args.group_by_length else {}),
                 seed=args.seed, disable_tqdm=args.quiet),
             train_dataset=train_ds, eval_dataset=eval_ds,
             data_collator=collator)
