@@ -83,6 +83,9 @@ def parse_args():
     p.add_argument("--keep-adapters", action="store_true",
                    help="keep every window's adapter (needed to resume; uses disk)")
     p.add_argument("--limit-windows", type=int, help="stop after N windows (debugging)")
+    p.add_argument("--quiet", action="store_true",
+                   help="hide the per-step progress bar; use for long unattended runs "
+                        "where the bar would fill the log")
     p.add_argument("--smoke", action="store_true",
                    help="tiny model, 2 windows, 1 epoch, CPU-friendly: validates the "
                         "pipeline end to end without touching a real model")
@@ -361,9 +364,12 @@ def main():
                 per_device_train_batch_size=args.batch_size,
                 per_device_eval_batch_size=args.batch_size,
                 num_train_epochs=args.epochs, learning_rate=args.lr,
-                save_strategy="no", eval_strategy="no", logging_strategy="no",
+                save_strategy="no", eval_strategy="no",
+                # A window takes minutes with no output otherwise, which is
+                # indistinguishable from a hang.
+                logging_strategy="steps", logging_steps=10,
                 report_to="none", fp16=False, bf16=(args.dtype == "bf16"),
-                seed=args.seed, disable_tqdm=True),
+                seed=args.seed, disable_tqdm=args.quiet),
             train_dataset=train_ds, eval_dataset=eval_ds,
             data_collator=collator)
 
