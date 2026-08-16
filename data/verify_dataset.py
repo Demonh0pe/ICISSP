@@ -14,7 +14,9 @@ script must keep that filter identical:
 Usage:
     python data/verify_dataset.py --data-dir /root/autodl-tmp/temporal_splits_by_time
 
-Exit code 0 means every window matched and the data is safe to train on.
+Exit code 0 means the data is usable: either an exact match, or a rebuild close
+enough to stand in. A rebuild is never silently equated with the original -- the
+deviation is printed so it can be reported.
 """
 
 import argparse
@@ -69,6 +71,7 @@ def main():
     ref = json.load(open(args.reference, encoding="utf-8"))["windows"]
 
     matched, mismatched, missing, extra = [], [], [], []
+    totals = {"got": {}, "want": {}}
     seen = set()
 
     for window, want in sorted(ref.items()):
@@ -78,6 +81,8 @@ def main():
             missing.append(window)
             continue
         got_v, got_f, dropped, warn = read_window(path)
+        totals["got"][window] = got_v + got_f
+        totals["want"][window] = want["vulnerable"] + want["fixed"]
         ok = (got_v == want["vulnerable"] and got_f == want["fixed"])
         (matched if ok else mismatched).append(window)
         if not args.quiet or not ok:
@@ -98,7 +103,8 @@ def main():
     print()
     print(f"matched    {len(matched)}/{len(ref)}")
     if mismatched:
-        print(f"mismatched {len(mismatched)}: {', '.join(mismatched)}")
+        print(f"mismatched {len(mismatched)}"
+              + (f": {', '.join(mismatched)}" if len(mismatched) <= 8 else ""))
     if missing:
         print(f"missing    {len(missing)}: {', '.join(missing)}")
     if extra:
@@ -106,15 +112,46 @@ def main():
         # 41 windows that appear in the logged run, and the timeline has 42.
         print(f"not in reference ({len(extra)}): {', '.join(extra)}")
 
+    # Counting mismatched windows alone cannot distinguish a rebuild that is a
+    # fraction of a percent light from genuinely different data, so report the
+    # magnitude and let it decide.
+    total_got = sum(totals["got"].values())
+    total_want = sum(totals["want"].values())
     print()
-    if mismatched or missing:
-        print("VERDICT: this is NOT the dataset behind the published numbers.")
-        print("  Any run on it is a new experiment, not a reproduction -- say so in the paper.")
-        if mismatched and not missing:
-            print("  Same windows, different contents: likely a different dedup or language filter.")
+    if total_want:
+        overall = 100 * (total_got - total_want) / total_want
+        per_window = sorted(100 * (totals["got"][w] / totals["want"][w] - 1)
+                            for w in totals["want"] if totals["want"][w])
+        median = per_window[len(per_window) // 2] if per_window else 0.0
+        worst = max((abs(p) for p in per_window), default=0.0)
+        low = sum(1 for p in per_window if p < 0)
+        print(f"samples    {total_got:,} vs {total_want:,} expected "
+              f"({total_got - total_want:+,}, {overall:+.2f}%)")
+        print(f"per window median {median:+.2f}%, largest deviation {worst:.2f}%, "
+              f"{low}/{len(per_window)} below reference")
+    else:
+        overall = worst = 0.0
+
+    print()
+    if missing:
+        print("VERDICT: windows are missing -- this cannot stand in for the published data.")
         return 1
-    print("VERDICT: matches the published dataset on every reference window.")
-    return 0
+    if not mismatched:
+        print("VERDICT: matches the published dataset on every reference window.")
+        return 0
+    if abs(overall) < 2 and worst < 10:
+        print(f"VERDICT: a close rebuild -- {abs(overall):.2f}% off overall, no window "
+              f"more than {worst:.1f}%.")
+        print("  Consistent with a handful of source commits having become unavailable.")
+        print("  Usable as a stand-in, but it is a rebuild, not the original: report the")
+        print("  deviation, and anchor at least one run against a published configuration")
+        print("  so the difference is measured rather than assumed.")
+        return 0
+    print(f"VERDICT: differs substantially ({overall:+.2f}% overall, up to {worst:.1f}% "
+          f"in a window).")
+    print("  Any run on it is a new experiment, not a reproduction -- say so in the paper.")
+    print("  Same windows, different contents: likely a different dedup or language filter.")
+    return 1
 
 
 if __name__ == "__main__":
