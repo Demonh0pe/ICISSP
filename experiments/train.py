@@ -72,6 +72,12 @@ def parse_args():
                    help="fp32 matches the published runs; bf16 is faster but not "
                         "numerically identical, so do not mix them within a comparison")
     p.add_argument("--no-backward", action="store_true", help="skip backward retention eval")
+    p.add_argument("--pad-to-max", action="store_true",
+                   help="pad every sample to --max-length as the notebooks did; slower, "
+                        "identical results")
+    p.add_argument("--no-gradient-checkpointing", action="store_true",
+                   help="trade memory for speed; phi-2 at batch 32 peaks near 22 of 32 GB "
+                        "with checkpointing on, so there is room")
     p.add_argument("--keep-adapters", action="store_true",
                    help="keep every window's adapter (needed to resume; uses disk)")
     p.add_argument("--limit-windows", type=int, help="stop after N windows (debugging)")
@@ -81,8 +87,15 @@ def parse_args():
     return p.parse_args()
 
 
-def load_window(path, tokenizer, max_length):
-    """Load one JSONL window. Filter matches the notebooks exactly."""
+def load_window(path, tokenizer, max_length, pad_to_max=False):
+    """Load one JSONL window. Filter matches the notebooks exactly.
+
+    Padding defaults to per-batch rather than the notebooks' padding to
+    max_length. Padded positions are masked out either way, so outputs are
+    unchanged -- but padding every sample to 512 tokens spends most of the
+    compute on padding, since most samples are far shorter. --pad-to-max
+    restores the original behaviour if an exact-throughput comparison is needed.
+    """
     import pandas as pd
     from datasets import Dataset
 
@@ -94,29 +107,38 @@ def load_window(path, tokenizer, max_length):
     df["label"] = df["response"].map(LABEL_MAP)
     ds = Dataset.from_pandas(df[["prompt", "label"]], preserve_index=False)
     return ds.map(
-        lambda x: tokenizer(x["prompt"], truncation=True, padding="max_length",
+        lambda x: tokenizer(x["prompt"], truncation=True,
+                            padding="max_length" if pad_to_max else False,
                             max_length=max_length),
         batched=True, remove_columns=["prompt"])
 
 
-def entropy_scores(model, dataset, batch_size=32):
-    """Predictive entropy per sample, in dataset order."""
+def entropy_scores(model, dataset, collator, batch_size=32):
+    """Predictive entropy per sample, in dataset order.
+
+    The collator is required, not optional: under per-batch padding the rows
+    have different lengths and the default collate cannot stack them.
+    """
     import torch
     import torch.nn.functional as F
 
     model.eval()
     device = next(model.parameters()).device
-    dl = torch.utils.data.DataLoader(dataset.with_format("torch"), batch_size=batch_size)
+    keep = [c for c in ("input_ids", "attention_mask", "label", "labels") if c in dataset.column_names]
+    dl = torch.utils.data.DataLoader(
+        dataset.select_columns(keep).with_format("torch"),
+        batch_size=batch_size, collate_fn=collator)
     out = []
     with torch.no_grad():
         for batch in dl:
-            inputs = {k: v.to(device) for k, v in batch.items() if k != "label"}
+            inputs = {k: v.to(device) for k, v in batch.items()
+                      if k in ("input_ids", "attention_mask")}
             probs = F.softmax(model(**inputs).logits.float(), dim=-1)
             out.extend((-(probs * torch.log(probs + 1e-10)).sum(-1)).cpu().tolist())
     return out
 
 
-def select_uncertain(dataset, model, k, balanced):
+def select_uncertain(dataset, model, k, balanced, collator):
     """Top-k by entropy; with `balanced`, k//2 from each class.
 
     Faithful to the committed Hybrid-CASR: entropy ranks within each class, and
@@ -127,7 +149,7 @@ def select_uncertain(dataset, model, k, balanced):
 
     if k <= 0 or len(dataset) == 0:
         return None
-    scored = dataset.add_column("entropy", entropy_scores(model, dataset))
+    scored = dataset.add_column("entropy", entropy_scores(model, dataset, collator))
     if not balanced:
         return scored.sort("entropy", reverse=True) \
                      .select(range(min(k, len(scored)))).remove_columns(["entropy"])
@@ -198,7 +220,8 @@ def main():
     from datasets import concatenate_datasets
     from peft import LoraConfig, PeftModel, TaskType, get_peft_model
     from transformers import (AutoModelForSequenceClassification, AutoTokenizer,
-                              Trainer, TrainingArguments, set_seed)
+                              DataCollatorWithPadding, Trainer, TrainingArguments,
+                              set_seed)
 
     if args.smoke:
         args.model = os.environ.get("SMOKE_MODEL", "hf-internal-testing/tiny-random-gpt2")
@@ -251,6 +274,9 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    # Pads each batch to its own longest sequence. A no-op when --pad-to-max
+    # already padded everything to the same length.
+    collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
     peft_config = LoraConfig(r=args.lora_r, lora_alpha=args.lora_alpha,
                              lora_dropout=args.lora_dropout, bias="none",
@@ -261,7 +287,7 @@ def main():
     def window_ds(tag):
         if tag not in cache:
             cache[tag] = load_window(os.path.join(args.data_dir, f"{tag}.jsonl"),
-                                     tokenizer, args.max_length)
+                                     tokenizer, args.max_length, args.pad_to_max)
         return cache[tag]
 
     def fresh_base():
@@ -312,7 +338,8 @@ def main():
                 else:
                     k = budget[j] if isinstance(budget, list) else budget
                     picked = select_uncertain(past, model, k,
-                                              balanced=(mode == "uncertain-balanced"))
+                                              balanced=(mode == "uncertain-balanced"),
+                                              collator=collator)
                     if picked is not None and len(picked):
                         extra.append(picked)
             if extra:
@@ -320,7 +347,7 @@ def main():
                 train_ds = concatenate_datasets([train_ds] + extra)
                 print(f"  replay: +{n_replay} samples from {len(extra)} window(s)")
 
-        if adapter_policy != "none":
+        if adapter_policy != "none" and not args.no_gradient_checkpointing:
             model.gradient_checkpointing_enable()
             model.config.use_cache = False
 
@@ -335,7 +362,8 @@ def main():
                 save_strategy="no", eval_strategy="no", logging_strategy="no",
                 report_to="none", fp16=False, bf16=(args.dtype == "bf16"),
                 seed=args.seed, disable_tqdm=True),
-            train_dataset=train_ds, eval_dataset=eval_ds)
+            train_dataset=train_ds, eval_dataset=eval_ds,
+            data_collator=collator)
 
         if adapter_policy != "none":
             if torch.cuda.is_available():
