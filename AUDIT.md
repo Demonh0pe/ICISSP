@@ -29,6 +29,7 @@ python analysis/recompute_metrics.py --repo <main 分支的 checkout>
 | 8 | **Replay-3P 和 OLoRA 每窗口重建适配器,不是持续学习** | 已证实 | Discussion 4.2 两个核心论断 |
 | 9 | LB-CL 的实现里没有任何类别加权 | 已证实 | Table 2、方法描述 |
 | 10 | Hybrid-CASR 的 70/30 缓冲区划分在代码里不存在 | 已证实 | 方法描述 |
+| 11 | **语料以 PHP 为主(30%),C/C++ 仅占 24%** | 已证实 | 2.2.1、4.4 的语料描述 |
 
 ---
 
@@ -327,6 +328,52 @@ parameters"倒是碰巧对的,但机制描述完全不符。
 
 这一条不影响结论(方法确实是"不确定性 + 类别均衡"),但方法描述需要按实现改写,
 否则别人复现不出来。
+
+---
+
+## 11. 语料以 PHP 为主,不是 C/C++ 【已证实】
+
+从重建的 patch 统计文件路径扩展名(`data/splits_hunk/build_stats.json` 的
+`languages_seen`,基于已抓取的样本):
+
+| 语言 | hunk 数 | 占比 |
+|---|---|---|
+| **php** | 7733 | **30.3%** |
+| c | 5338 | 20.9% |
+| unknown(无扩展名/配置/文档) | 4568 | 17.9% |
+| java | 1970 | 7.7% |
+| javascript | 1700 | 6.7% |
+| python | 1394 | 5.5% |
+| ruby | 1188 | 4.7% |
+| c++ | 802 | 3.1% |
+| go / typescript / c# / scala / rust / objective-c / swift | 846 | 3.3% |
+
+**C + C++ 合计 6140,占 24.0%。PHP 是最大的单一语言。**
+
+论文 2.2.1:
+
+> "In this study we focus on function-level instances from the dominant languages
+> in the corpus (primarily C/C++), filtering out samples from other languages to
+> keep the setting homogeneous."
+
+论文 4.4:
+
+> "The CVEfixes-based dataset predominantly covers C/C++ and Java, which may bias
+> results towards these languages."
+
+两处都与数据不符:
+
+1. 语料**不是**以 C/C++ 为主,而是以 PHP 为主
+2. **过滤根本没有发生**——第 9 条已证实代码里没有任何语言过滤,所有语言的样本都进了训练集
+
+也就是说,实验是在一个 PHP 占三成的多语言混合体上做的,论文描述的却是同质的 C/C++ 设定。
+4.4 节把"偏向 C/C++"列为效度威胁,而真实的威胁方向恰好相反。
+
+**对扩展版的影响:**
+
+- 不要加语言过滤。原实验没有,加了就不是复现;而且过滤到 C/C++ 只剩四分之一的数据。
+- 2.2.1 和 4.4 的语料描述按实际分布重写。多语言本身不是缺点——**跨语言的持续学习反而是更有意思的设定**,只是必须如实说。
+- `unknown` 占 17.9% 值得单独查一下:里面混着配置文件、文档、构建脚本。原管线把它们和代码一起塞进了样本(第 12 条的 markdown 例子就是这么来的)。
 
 ---
 
