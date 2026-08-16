@@ -167,11 +167,26 @@ python experiments/train.py --method hybrid-casr --model Qwen/Qwen2.5-Coder-1.5B
 ## 步骤 6:出结果
 
 ```bash
-python analysis/recompute_metrics.py --repo <main 分支的 checkout>   # 会议版旧数据重算
+# 会议版旧数据:反推混淆矩阵后重算
+python analysis/recompute_metrics.py --repo <main 分支的 checkout>
+python analysis/make_figures.py --repo <main 分支的 checkout> --out figures/
+
+# 新跑的多种子结果:跨种子聚合 + 配对检验
+python analysis/aggregate_runs.py --metrics runs/main/metrics.csv --out figures/
 ```
 
 新跑的 `runs/main/metrics.csv` 已经直接包含 `macro_f1`、`f1_vulnerable`、`f1_fixed`,
 不需要反推。`f1_binary_pos1_LEGACY` 一列保留了会议版的口径,便于新旧对齐。
+
+`aggregate_runs.py` 分开报告两种方差,它们回答不同的问题:
+
+- **window sd** —— 同一个种子内跨评测窗口的波动,反映方法对"在哪个时期测"有多敏感
+- **seed sd** —— 各种子均值之间的波动,只反映初始化的影响
+
+**如果 seed sd 接近方法之间的差距,那个差距就不是证据。** 会议版留下的三份
+Hybrid-CASR 结果极差是 0.0127,而声称的提升是 0.0164——正是这个情形。
+`fig5_seed_spread` 把它画出来:横条覆盖各种子的最低到最高均值,
+横条互相重叠的方法,排序没有被这批运行确立。
 
 ---
 
