@@ -53,6 +53,24 @@ def load(path):
     return d
 
 
+def drop_superseded(d):
+    """Keep the last row for each evaluation.
+
+    metrics.csv is append-only, and a run that is interrupted and restarted
+    replays its early windows -- so those windows appear twice and would be
+    double-weighted in every mean. The later row is the one from the run that
+    finished, so it wins.
+    """
+    keys = [c for c in ("model", "method", "seed", "granularity",
+                        "train_window", "eval_window", "direction")
+            if c in d.columns]
+    before = len(d)
+    d = d.drop_duplicates(subset=keys, keep="last").reset_index(drop=True)
+    if len(d) < before:
+        print(f"note: dropped {before - len(d)} superseded row(s) from restarted runs")
+    return d
+
+
 def label_methods(d):
     """Qualify method names with the backbone when more than one is present.
 
@@ -199,7 +217,8 @@ def main():
                     help="restrict to one window width (default: all present)")
     args = ap.parse_args()
 
-    d = label_methods(pd.concat([load(p) for p in args.metrics], ignore_index=True))
+    d = label_methods(drop_superseded(
+        pd.concat([load(p) for p in args.metrics], ignore_index=True)))
     if args.granularity and "granularity" in d.columns:
         d = d[d["granularity"] == args.granularity]
     if d.empty:
