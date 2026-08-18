@@ -1,0 +1,230 @@
+% ==========================================================
+%  extended_paper.tex 的新增/修改块,按出现顺序排列。
+%  想整文件替换就直接用 extended_paper.tex,不必用这个。
+% ==========================================================
+
+
+%% ---------------------------------------------------------
+%% [1] 摘要 —— 整段替换 \abstract{...}
+%% 只改了后半段(从 Extending our conference results 起),前半段原样保留。
+%% ---------------------------------------------------------
+
+\abstract{Large Language Models (LLMs) are increasingly applied to source-code vulnerability detection, yet the prevailing evaluation practice of random train--test splitting ignores the temporal order in which vulnerabilities are disclosed and therefore reports optimistic performance that does not survive deployment. This article studies the problem that arises once such a detector is placed on a code base that keeps evolving: it must flag \emph{future} vulnerabilities while the statistical make-up of vulnerable and patched functions drifts underneath it. We fine-tune a parameter-efficient decoder model (microsoft/phi-2 with LoRA) continually across a CVE-linked corpus that runs from 2018 to 2024, segmented into forward-chained bi-monthly windows, and we contrast eight update strategies ranging from single-window and cumulative training to replay-based and regularisation-based continual learning. Central to the study is Hybrid Class-Aware Selective Replay (Hybrid-CASR), which fills its rehearsal buffer by combining uncertainty-driven selection with an enforced balance between VULNERABLE and FIXED functions. Extending our conference results, we add a full pairwise significance analysis (with Holm correction) across all methods, a stability-index characterisation of the plasticity--stability trade-off, and a multi-seed replication of the core comparison on a second backbone (Qwen2.5-Coder-1.5B). The statistical analysis shows that the leading strategies form an indistinguishable top cluster, within which Hybrid-CASR is the steadiest and among the cheapest (roughly $24\%$ higher F1-per-minute than single-window training), and that heavy regularisation or oversized buffers actively hurt under sharp drift. The replication separates what generalises from what does not: the ordering of the weaker strategies transfers, and Hybrid-CASR retains better than the baseline at every backward lag, but its forward-accuracy lead does not reproduce, becoming $-0.006$ and smaller than the seed-to-seed spread of either method. Lagged retention profiles further show that a replay method with a fixed horizon collapses where its buffer ends, so short-lag retention cannot distinguish knowledge consolidated in parameters from data shown again. We therefore state the case for class-balanced selective replay as a trade---better retention at a forward cost indistinguishable from zero---rather than as an accuracy gain, and we caution both that differences of a few thousandths of F1 need multi-seed estimation to be meaningful, and that absolute performance keeps such systems in a decision-support rather than an autonomous role.}
+
+
+%% ---------------------------------------------------------
+%% [2] Introduction —— RQ 列表整块替换(含前后两句)
+%% 覆盖原 “It preserves the original protocol and headline results…” 到 “…Our contributions are:” 之间的全部内容。
+%% ---------------------------------------------------------
+
+This article is the extended version of our conference paper~\citep{Dou2026ICISSP}. It preserves the original protocol and reported results, and adds both new analysis and a new set of experiments on a second backbone (detailed in Section~\ref{sec:differences}). We organise the work around the four questions carried over from the thesis this line of work builds on, plus a fifth that the extension exists to answer:
+\begin{itemize}
+    \item \textbf{RQ1:} How do continual learning strategies compare when applied to a parameter-efficient decoder LLM (phi-2 with LoRA) for temporal vulnerability detection?
+    \item \textbf{RQ2:} What effect does temporal window granularity (monthly to annual) have on forward prediction performance and its stability?
+    \item \textbf{RQ3:} To what extent can these strategies curb catastrophic forgetting while remaining plastic to new vulnerability patterns?
+    \item \textbf{RQ4:} What computational trade-offs do the strategies impose, and how do these bear on single-GPU deployment?
+    \item \textbf{RQ5:} Which of these findings are properties of the continual-learning strategy, and which are properties of the particular backbone they were measured on?
+\end{itemize}
+
+Against RQ1--RQ4 we evaluate eight strategies---single-window fine-tuning, cumulative training, replay variants and regularisation variants---on a common phi-2 backbone; against RQ5 we re-run the core comparison on a second, deliberately dissimilar decoder.
+
+
+%% ---------------------------------------------------------
+%% [3] Introduction —— contributions 列表新增一条
+%% 插在 “Full statistical and stability analysis (new)” 与 “Resource--performance analysis” 之间。
+%% ---------------------------------------------------------
+
+    \item \textbf{Cross-architecture replication.} A multi-seed re-run of the core comparison on a second backbone (\texttt{Qwen2.5-Coder-1.5B}), separating the findings that transfer from those that do not: the ranking of the weaker strategies and Hybrid-CASR's retention advantage both hold, while its forward-accuracy lead does not reproduce.
+
+
+%% ---------------------------------------------------------
+%% [4] sec:eval-metrics —— Primary metric 段末尾追加一句
+%% 只加这一句,其余不动。
+%% ---------------------------------------------------------
+
+Section~\ref{sec:disc-limitations} records one qualification to how this metric is realised in the reference implementation, which applies uniformly to every result reported here.
+
+
+%% ---------------------------------------------------------
+%% [5] Methodology —— 新增小节
+%% 放在 sec:resource-analysis 之后、\section{Results} 之前。
+%% ---------------------------------------------------------
+
+\subsection{Cross-Architecture Replication Protocol}
+\label{sec:replication}
+
+\noindent
+The results reported so far rest on a single backbone, which leaves open how much of the observed ranking is a property of the strategies and how much of phi-2. To separate the two (RQ5) we repeat the core comparison on a second decoder. This subsection describes the protocol; results follow in Section~\ref{sec:cross-arch}.
+
+\textbf{Second backbone.} We use \texttt{Qwen2.5-Coder-1.5B}: roughly half the parameter count of phi-2, a different pretraining corpus and tokeniser, and---unlike the general-purpose phi-2---specialised on code from the outset. The pairing is chosen to be demanding rather than favourable. If Hybrid-CASR's advantage follows from selective replay rather than from one model, the smaller code-specialised backbone is where it should be most visible, since it has the least general capacity to fall back on.
+
+\textbf{Corpus.} The original patch archive from the conference experiments was no longer recoverable, so the corpus was rebuilt from the same sources by the same procedure: NVD records were re-linked to their GitHub commits and $23{,}935$ patches were re-fetched, yielding $43{,}773$ function-level instances across the same 42 bi-monthly windows (the conference corpus held $43{,}451$). Measured against the per-window class counts published in the conference version, the rebuild differs by $-0.86\%$ overall, with a per-window median of $-0.66\%$ and a worst case of $4.6\%$; the shortfall is accounted for by 414 upstream commits that have since been deleted from GitHub. The rebuild is therefore very close to, but not identical with, the published corpus, and Section~\ref{sec:disc-limitations} states what that costs us.
+
+\textbf{Controls.} Every hyperparameter in Table~\ref{tab:config} is held at its published value---LoRA $r=16$, $\alpha=32$, dropout $0.05$, three epochs, learning rate $2\times10^{-4}$, batch size 32, FP32---so that backbone identity is the only variable that changes between the two arms. Two throughput optimisations were evaluated against this requirement rather than adopted for speed. Bfloat16 training ran about $1.5\times$ faster but moved fixed probe windows by up to $0.08$ F1, which would have confounded numerical precision with the architecture change, and was rejected; length-grouped batching ran about $1.95\times$ faster and moved the same probe windows by $0.005$, within run-to-run noise, and was adopted for both arms.
+
+\textbf{Seeds.} A difference of a few thousandths of F1 cannot be read off a single run. The two conditions that carry the central claim---window-only and Hybrid-CASR on the new backbone---were therefore each trained under three random seeds ($42/43/44$), and we report both the window-to-window standard deviation and the seed-to-seed spread. The remaining conditions were run under a single seed, which is adequate only because their gaps are an order of magnitude larger than the seed spread we measure. Hardware for the replication is a single NVIDIA RTX~5090 (32\,GB) with a CUDA~12.8 PyTorch build, \texttt{transformers}~5.15 and \texttt{peft}~0.20.
+
+\textbf{Metric.} All replication numbers are computed by the same metric implementation as the conference results, so the two are directly comparable; Section~\ref{sec:disc-limitations} records what that implementation actually computes.
+
+
+%% ---------------------------------------------------------
+%% [6] Results 开头导语 —— 整段替换
+%% 原句以 “This section reports findings from the 2018--2024 experiments…” 开头。
+%% ---------------------------------------------------------
+
+This section reports findings from the 2018--2024 experiments, addressing the research questions through granularity effects, method comparison, the new pairwise-significance and stability analyses, knowledge retention, computational cost and error analysis. It closes with the cross-architecture replication (Section~\ref{sec:cross-arch}), which asks how much of the preceding picture is a property of the backbone.
+
+
+%% ---------------------------------------------------------
+%% [7] Results —— 新增小节(含两张新表)
+%% 放在 sec:error-analysis 之后、\section{Discussion} 之前。
+%% ---------------------------------------------------------
+
+\subsection{Cross-Architecture Generalisation}
+\label{sec:cross-arch}
+
+\noindent
+Following the protocol of Section~\ref{sec:replication}, we re-run the core comparison on \texttt{Qwen2.5-Coder-1.5B} to establish which of the conclusions above hold across backbones (RQ5).
+
+\textbf{Reading the tables.} One point of interpretation applies throughout. Re-running the window-only baseline on phi-2 over the rebuilt corpus and the current dependency stack gives $0.7236$, not the $0.651$ published in the conference version; the rebuilt corpus, the move from \texttt{transformers}~4.35 to~5.15 and from \texttt{peft}~0.6 to~0.20 changed together, and we did not attribute the shift between them. The consequence is procedural. The replication is internally consistent---one corpus, one code base, one dependency set and one hardware configuration across all of its runs---so comparisons \emph{within} Tables~\ref{tab:cross-arch} and~\ref{tab:cross-arch-ibr} are sound, while individual cells should not be read against Tables~\ref{tab:method-forward} or~\ref{tab:retention-detailed}. Where we refer to a conference result below, we compare \emph{differences between methods} rather than absolute levels.
+
+\begin{table}[t]
+  \centering
+  \caption{Forward F1 across backbones. $\Delta$ and $p$ are paired Wilcoxon signed-rank tests against the window-only baseline \emph{on the same backbone}, over the 41 common windows, after averaging across seeds.}
+  \label{tab:cross-arch}
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{llcccccr}
+      \hline
+      \textbf{Backbone} & \textbf{Method} & \textbf{Seeds} & \textbf{Mean} &
+      \textbf{SD$_w$} & \textbf{SD$_s$} & \textbf{$\Delta$} & \textbf{$p$} \\
+      \hline
+      phi-2 & Window-only & 1 & 0.7236 & 0.0565 & ---    & ---    & ---  \\
+      \hline
+      Qwen  & Window-only & 3 & 0.6829 & 0.0556 & 0.0045 & ---    & ---  \\
+      Qwen  & Hybrid-CASR & 3 & 0.6774 & 0.0532 & 0.0066 & $-0.0056$ & $0.032$ \\
+      Qwen  & Replay-3P   & 1 & 0.6458 & 0.0518 & ---    & $-0.0371$ & $<\!.0001$ \\
+      Qwen  & OLoRA       & 1 & 0.5945 & 0.0424 & ---    & $-0.0884$ & $<\!.0001$ \\
+      \hline
+    \end{tabular}%
+  }
+  \vspace{1mm}
+  {\footnotesize SD$_w$ is the standard deviation across evaluation windows; SD$_s$ is the standard deviation across random seeds. Seed ranges: Window-only $0.6780$--$0.6868$, Hybrid-CASR $0.6732$--$0.6850$.}
+\end{table}
+
+\textbf{Forward performance.} On phi-2 the conference version measured Hybrid-CASR ahead of window-only by $+0.016$; on Qwen2.5-Coder-1.5B the same comparison gives $-0.0056$ (Table~\ref{tab:cross-arch}). Two properties of that figure belong together. The difference is significant under a window-paired Wilcoxon test ($p=0.032$), but it is smaller than Hybrid-CASR's own seed-to-seed standard deviation ($0.0066$), and the two methods' seed ranges overlap ($0.6780$--$0.6868$ against $0.6732$--$0.6850$). The supportable reading is that the forward advantage does not reproduce on a second architecture, rather than that it reverses; the $p$-value on its own would overstate the case.
+
+The seed sweep carries a methodological point of its own. Computed from a single seed, this same comparison gives $-0.0136$ at $p=0.0022$; with three seeds the effect halves to $-0.0056$ at $p=0.032$. An estimate that moves this much with replication is one at the edge of what a single run resolves, and that caution applies equally to the conference version's $+0.016$, which was likewise a single-run estimate.
+
+\begin{table}[t]
+  \centering
+  \caption{Immediate Backward Retention across backbones. Decay $=(\mathrm{IBR@1}-\mathrm{IBR@6})/\mathrm{IBR@1}$. Absolute levels are not comparable with Table~\ref{tab:retention-detailed} (see text).}
+  \label{tab:cross-arch-ibr}
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{llccccr}
+      \hline
+      \textbf{Backbone} & \textbf{Method} & \textbf{@1} & \textbf{@3} &
+      \textbf{@5} & \textbf{@6} & \textbf{Decay} \\
+      \hline
+      phi-2 & Window-only & 0.8991 & 0.8492 & 0.8263 & 0.8225 & 8.5\% \\
+      \hline
+      Qwen  & Hybrid-CASR & 0.9081 & 0.8123 & 0.7702 & 0.7552 & 16.8\% \\
+      Qwen  & Window-only & 0.8799 & 0.7961 & 0.7646 & 0.7537 & 14.3\% \\
+      Qwen  & Replay-3P   & 0.8936 & 0.6446 & 0.6523 & 0.6400 & 28.4\% \\
+      Qwen  & OLoRA       & 0.6021 & 0.5934 & 0.5839 & 0.5935 & 1.4\% \\
+      \hline
+    \end{tabular}%
+  }
+\end{table}
+
+\textbf{Backward retention.} Here the picture is the reverse, and it transfers. On the new backbone Hybrid-CASR leads window-only at all four lags, with a margin that decays monotonically with temporal distance: $+0.028$ at lag 1, $+0.016$ at lag 3, $+0.006$ at lag 5, $+0.002$ at lag 6 (Table~\ref{tab:cross-arch-ibr}). That shape follows from the mechanism, since the buffer draws from $W_{t-1}$ and $W_{t-2}$ and its protective effect should fade as the probe moves out of buffer range. Read with the forward result, Hybrid-CASR on a second architecture is best described as a trade: a measurable improvement in retention at a forward cost indistinguishable from zero at the resolution of three seeds. This is a narrower statement than the conference version's, and it falls within the stability--plasticity frame the paper already uses.
+
+\textbf{The weaker strategies.} Replay-3P ($-0.0371$) and OLoRA ($-0.0884$) remain the two weakest methods on Qwen, in the same order as on phi-2 ($0.622$ and $0.599$ in Table~\ref{tab:method-forward}). Both deficits are six to twenty times the measured seed spread, so a single seed suffices to establish them; whatever limits these two strategies is not a property of the backbone.
+
+\textbf{Retention horizons.} Replay-3P's retention curve is the most informative row in Table~\ref{tab:cross-arch-ibr}. Despite finishing second-to-last on forward F1, it posts an IBR@1 of $0.8936$---above the window-only baseline ($0.8799$) and behind only Hybrid-CASR ($0.9081$)---then falls to $0.6446$ at lag 3, a drop of $0.25$ that no other method exhibits. The break coincides with the edge of its replay horizon: it rehearses $W_{t-1}$ and $W_{t-2}$, and its retention collapses at the first probe outside them. This suggests that its apparent retention is supplied by the replayed data rather than by knowledge accumulated in the parameters, whereas methods that carry adapter state forward---window-only and Hybrid-CASR---decay smoothly with no discontinuity at any lag. Retention measured at short lags alone therefore cannot distinguish a model that has retained a pattern from one that has recently been shown it again; probing at several lags separates the two.
+
+\textbf{Backbone scale.} The larger backbone retains better: phi-2 decays $8.5\%$ from lag 1 to lag 6 against Qwen's $14.3\%$, and leads on forward F1 as well ($0.7236$ against $0.6829$). We report this as an observation rather than a scale effect, for two reasons: the phi-2 arm has a single seed, and the two models differ simultaneously in parameter count, pretraining corpus and architecture family, so this design cannot separate the three. Attribution requires a study that varies size within one model family.
+
+
+%% ---------------------------------------------------------
+%% [8] sec:disc-interpretation —— 末尾追加一段
+%% 接在 “…a more defensible and more useful claim than a bare mean-F1 win.” 之后。
+%% ---------------------------------------------------------
+
+The replication (Section~\ref{sec:cross-arch}) extends that qualification. On a second backbone the forward-accuracy lead is absent---$-0.0056$ where phi-2 gave $+0.016$, and small enough that the two methods' seed ranges overlap---while the retention advantage, present at every lag, and the ordering of the weaker strategies both persist. These findings are consistent rather than contradictory. Hybrid-CASR's forward gain already sat inside the top cluster's noise band on phi-2 alone, as Section~\ref{sec:pairwise} shows, and a quantity statistically indistinguishable from its neighbours on one architecture is not one that should be expected to reproduce on another; the retention effect, tied mechanistically to the contents of the buffer, does reproduce. The method's contribution is accordingly better stated as a trade---retention gained at negligible forward cost---than as an accuracy improvement.
+
+
+%% ---------------------------------------------------------
+%% [9] sec:disc-theory —— 末尾追加一段
+%% 作为该小节最后一段,接在 “…also erases still-relevant signal.” 之后。
+%% ---------------------------------------------------------
+
+The lagged retention profiles of Section~\ref{sec:cross-arch} add a distinction the buffer-size framing alone cannot draw. Replay-3P's retention holds inside its replay horizon and collapses immediately outside it, whereas methods carrying adapter state forward decay smoothly across all four lags. Two different mechanisms can therefore produce a respectable IBR@1: knowledge consolidated in the parameters, and data shown again a window ago. They are indistinguishable at short lags and separate at long ones. The methodological consequence for continual-learning evaluation on code is direct---single-lag retention metrics, still common in the literature, cannot support claims about consolidation---and it suggests that Replay-3P's weakness may have less to do with buffer size than with how little of what it rehearses persists once rehearsal stops.
+
+
+%% ---------------------------------------------------------
+%% [10] sec:disc-practical —— 中间插一段
+%% 插在 “Cumulative training … is hard to justify.” 与 “Window-to-window variability…” 之间。
+%% ---------------------------------------------------------
+
+The replication refines this advice rather than overturning it. On a second backbone the accuracy argument for Hybrid-CASR does not hold, leaving retention, stability and cost as the case for it. That case remains sound but is conditional: selective replay is worth adopting where old vulnerability patterns recur in the code base and catching them a year later has value, and per-window fine-tuning is adequate where they do not. A corollary for teams evaluating such a choice on their own data is that a difference of a few thousandths of F1 measured from one training run is not yet actionable---ours halved when replicated across seeds.
+
+
+%% ---------------------------------------------------------
+%% [11] sec:disc-limitations —— 新增 5 段
+%% Metric definition 接在 Metric and granularity 之后;Architecture coverage 替换原 Single architecture 段,后跟 Rebuilt corpus 与 Replication breadth;Input truncation 接在 Pretraining contamination 之后。
+%% ---------------------------------------------------------
+
+\textbf{Metric definition.} One qualification to the above. The reference implementation that produced every number in this article---the conference results and the replication alike---computes F1 with scikit-learn's default binary averaging, which scores the positive (FIXED) class alone rather than averaging the two per-class scores as Section~\ref{sec:eval-metrics} defines. Because all methods, both backbones, all granularities and all windows are scored by that same function, no comparison, ranking, significance test or effect size reported here is affected; the qualification is to the reading of the absolute values, which should be understood as a single-class F1 rather than a macro average.
+
+
+\textbf{Architecture coverage.} Section~\ref{sec:cross-arch} reduces the exposure to a single backbone by replicating the core comparison on \texttt{Qwen2.5-Coder-1.5B}, where the ranking of the weaker strategies transfers but Hybrid-CASR's forward-accuracy lead does not. Two decoders are nonetheless still two decoders. Nothing here speaks to encoders such as CodeBERT~\citep{Feng2020CodeBERT}, to graph models~\citep{Zhou2019Devign,Cao2021BGNN4VD}, or to backbones beyond the single-GPU range, and neither the granularity sweep nor the top-cluster equivalence of Section~\ref{sec:pairwise} was re-run on the second backbone.
+
+\textbf{Rebuilt corpus.} The replication of Section~\ref{sec:cross-arch} uses a corpus rebuilt from NVD and GitHub, because the original patch archive was no longer recoverable. It deviates from the published per-window class counts by $-0.86\%$ overall (per-window median $-0.66\%$, worst case $4.6\%$), the shortfall being 414 upstream commits deleted since collection. This is close, but it is not the same corpus, and it is one of several simultaneous changes---together with \texttt{transformers}~4.35$\rightarrow$5.15 and \texttt{peft}~0.6$\rightarrow$0.20---that we did not disentangle. Their joint effect is visible: the phi-2 window-only anchor scores $0.7236$ under the replication against $0.651$ as published. All comparisons drawn in Section~\ref{sec:cross-arch} are therefore internal to the replication, where corpus, code, dependencies and hardware are held constant.
+
+\textbf{Replication breadth.} Only the two conditions carrying the central claim were run under three seeds; the phi-2 anchor, Replay-3P and OLoRA were run under one. CASR, Replay-1P, LB-CL, cumulative training and zero-shot were not re-run on the second backbone at all, for compute reasons, so the top-cluster equivalence established in Section~\ref{sec:pairwise} has been tested on one architecture only. The single-seed results are reported because their gaps exceed the measured seed spread by an order of magnitude, not because one seed is in general sufficient---as Section~\ref{sec:cross-arch} itself demonstrates.
+
+
+\textbf{Input truncation.} Functions are truncated at 512 tokens, which affects $20.6\%$ of instances; the length distribution is long-tailed (p90 $=1273$ tokens, p99 on the order of $10^4$). Long functions are thus systematically presented to the model in part, and any vulnerability whose evidence lies beyond the cut is unreachable in principle. The truncation is identical across methods and backbones, so it does not bias the comparison, but it does place a ceiling on absolute performance that none of the strategies studied here can lift.
+
+
+%% ---------------------------------------------------------
+%% [12] sec:disc-future —— 首句替换
+%% 替换原 “Several directions follow. First, the granularity flatness … artefact of this corpus and model.”
+%% ---------------------------------------------------------
+
+Several directions follow. First, the cross-architecture replication should be completed and widened: the five strategies not re-run on the second backbone should be, so that the top-cluster equivalence is tested rather than assumed to transfer, and the granularity flatness ($0.651$--$0.669$) deserves the same treatment. Our own results argue for how that should be done---differences of a few thousandths of F1 halved when we moved from one seed to three, so multi-seed reporting with explicit seed spread, rather than single-run point estimates, ought to be the default in this setting. A backbone family with several sizes would additionally let the retention-versus-scale observation of Section~\ref{sec:cross-arch} be tested properly, which our two-model design cannot do.
+
+
+%% ---------------------------------------------------------
+%% [13] sec:differences —— 整段替换
+%% 原文说 “the extension is analytical and expository rather than a new set of experiments”,这句必须改掉。
+%% ---------------------------------------------------------
+
+This article extends our ICISSP paper~\citep{Dou2026ICISSP}. The conference experiments are reported unchanged; the extension adds new analysis of them, and---centrally---a new set of experiments on a second backbone. Together these enlarge the original by well over the required margin of new material. Concretely, the additions are as follows.
+
+First, the background is substantially expanded: a dedicated Related Work section (Section~\ref{sec:related}) now develops three literatures---learning-based vulnerability detection, continual learning for language models, and temporally-honest evaluation---that the conference version could only gesture at inline. Second, the Hybrid-CASR mechanism, previously described only in prose, is formalised as an explicit algorithm (Algorithm~\ref{alg:hybrid-casr}) with predictive-entropy scoring and an exact buffer partition. Third, we add a full pairwise significance analysis across all eight strategies with Holm--Bonferroni correction (Section~\ref{sec:pairwise}, Table~\ref{tab:pairwise}); this was absent from the conference version, which tested only Hybrid-CASR against a single baseline, and it materially refines the interpretation by showing that the four leading methods are statistically inseparable. Fourth, we introduce a stability-index treatment of the plasticity--stability trade-off (Section~\ref{sec:stability}, Table~\ref{tab:stability}), which resolves the resulting tie in favour of Hybrid-CASR on consistency grounds.
+
+Fifth, we add a new experimental arm: a multi-seed replication of the core comparison on \texttt{Qwen2.5-Coder-1.5B} (protocol in Section~\ref{sec:replication}, results in Section~\ref{sec:cross-arch}, Tables~\ref{tab:cross-arch} and~\ref{tab:cross-arch-ibr}), together with the research question RQ5 that motivates it. Its outcome is mixed and is reported as measured: Hybrid-CASR's forward-accuracy lead does not reproduce on the second backbone, while its backward-retention advantage and the ordering of the weaker strategies do. Section~\ref{sec:disc-interpretation} argues that this locates the conference conclusion rather than overturning it, since a lead already shown in Section~\ref{sec:pairwise} to lie inside the top cluster's noise band was not one to expect to survive a change of architecture. The replication also yields a finding with no counterpart in the conference version: lagged retention profiles distinguish knowledge consolidated in parameters from data rehearsed recently (Section~\ref{sec:disc-theory}).
+
+Sixth, the threats-to-validity discussion is broadened accordingly, with treatments of pretraining contamination, the rebuilt corpus and its measured deviation from the published one, the breadth of the replication, input truncation, and the definition of the reported F1. Finally, the title, abstract and conclusions have been rewritten to reflect the shift in emphasis---from proposing a method toward establishing, with fuller statistics and a second architecture, what selective replay can and cannot be relied on to deliver under temporal drift. Tables and figures carried over from the conference version are marked as reproduced at each caption.
+
+
+%% ---------------------------------------------------------
+%% [14] Conclusion —— 整节替换(四段)
+%% ---------------------------------------------------------
+
+We asked whether continual learning can keep an LLM-based vulnerability detector useful as it is deployed across years of shifting code, and we answered it with a long-horizon, leakage-controlled study over 42 bi-monthly windows of CVEfixes data using a LoRA-tuned phi-2 backbone, extended here with a multi-seed replication on a second decoder. The picture that emerges is more nuanced than a single winning method. Selective, class-balanced replay---Hybrid-CASR---does reach the best mean forward F1 on phi-2 ($0.667$) and does so cheaply, running about $24\%$ more efficiently in F1-per-minute than single-window fine-tuning and a fraction of the cost of cumulative training. But the extended statistical analysis added here shows that its mean-F1 lead over the other strong replay methods is within noise once multiple testing is controlled; the four leading strategies form one statistically indistinguishable cluster.
+
+The replication on a second decoder shows which parts of this hold across backbones, and the answer is mixed. On Qwen2.5-Coder-1.5B the forward-accuracy lead does not reproduce---$-0.006$, inside the seed-to-seed spread of both methods---while the backward-retention advantage holds at every lag and the ordering of the weaker strategies is unchanged. Read with the significance analysis, the two results agree: a difference sitting inside a noise band on one architecture is not one to expect to transfer to another, and it was the retention effect, tied to what the replay buffer holds, that had a mechanism behind it. The contribution of Hybrid-CASR is accordingly a \emph{trade}---better retention at a forward cost indistinguishable from zero, together with the steadiest and among the cheapest operating points of the top cluster---rather than an accuracy improvement. That is a smaller claim than the conference version's, and a more durable one.
+
+Two further lessons generalise beyond this method. First, effect sizes of a few thousandths of F1 are not estimable from single runs: ours halved when replication went from one seed to three, reason enough to treat single-run comparisons at this scale, our own earlier one included, as provisional. Second, retention probed at a single short lag cannot distinguish consolidation from rehearsal---a fixed-horizon replay method held its ground inside its buffer window and dropped $0.25$ F1 immediately beyond it, while methods carrying adapter state forward decayed smoothly throughout. The granularity sweep adds a complementary note of robustness: one-month to twelve-month windows land within a $0.651$--$0.669$ band, so time scale changes \emph{which} vulnerabilities are caught more than \emph{how many}.
+
+For practitioners, the operational reading is deliberately sober. Forward performance in the $65$--$67\%$ range on the conference backbone, together with sharp drops during landscape-shifting windows, means these detectors belong in a decision-support role, with human verification, rather than as autonomous oracles. Teams with little ML capacity can reasonably run simple per-window fine-tuning; those for whom recurring vulnerability patterns matter---and who will still be running the model a year later---can adopt Hybrid-CASR for better retention at a steadier, cheaper operating point and no measurable accuracy cost. The main caveats---two decoder architectures and no encoder or graph model, a C/C++--and--Java-heavy corpus, a replication corpus rebuilt to within $0.86\%$ of the published one rather than identical to it, and possible pretraining contamination that inflates absolute scores while leaving between-method comparisons intact---mark the path forward: complete the replication across the remaining strategies and further backbones, pursue adaptive windowing, and build evaluation protocols that approximate true zero-day conditions. Robust temporal vulnerability detection remains an open problem, but this study maps, with fuller statistics and one more architecture than before, exactly where the current strategies stand.
+
+
+%% ---------------------------------------------------------
+%% [15] tab:granularity —— 一处排版修正
+%% 原来是 \begin{tabular}{lccccccc}(8 列)但每行只有 7 格,会多出一个空列。
+%% ---------------------------------------------------------
+
+\begin{tabular}{lcccccc}
