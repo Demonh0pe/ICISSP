@@ -1,0 +1,779 @@
+\documentclass[a4paper,twoside]{article}
+
+\usepackage{epsfig}
+\usepackage{subcaption}
+\usepackage{calc}
+\usepackage{amssymb}
+\usepackage{amstext}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{multicol}
+\usepackage{pslatex}
+\usepackage{apalike}
+\usepackage{soul}
+\usepackage{xcolor}
+\sethlcolor{blue}
+\usepackage[ruled,vlined]{algorithm2e}
+\usepackage[bottom]{footmisc}
+\usepackage{natbib}
+\usepackage{SCITEPRESS}
+
+\begin{document}
+
+%% ======================================================================
+%%  NOTE FOR THE AUTHORS (remove before submission)
+%%  This is the EXTENDED / REVISED version prepared from the ICISSP 2026
+%%  conference paper. Changes relative to the conference version:
+%%   - New title, abstract and conclusions (Springer requirement 5).
+%%   - Conference version cited as \citep{Dou2026ICISSP} (requirement 1).
+%%   - Tables/figures reused from the conference version carry an explicit
+%%     source note (requirement 3).
+%%   - New material (>30%, requirement 2): expanded Related Work
+%%     (Sec.~\ref{sec:related}); formal Hybrid-CASR algorithm
+%%     (Sec.~\ref{sec:cl-strategies}); full pairwise significance matrix
+%%     with Holm correction (Sec.~\ref{sec:pairwise}); stability-index
+%%     analysis (Sec.~\ref{sec:stability}); NEW EXPERIMENTS -- a multi-seed
+%%     cross-architecture replication on Qwen2.5-Coder-1.5B, with its own
+%%     research question RQ5, protocol (Sec.~\ref{sec:replication}) and
+%%     results (Sec.~\ref{sec:cross-arch}, Tabs.~\ref{tab:cross-arch}
+%%     and~\ref{tab:cross-arch-ibr}); expanded threats and future work;
+%%     and the "Differences from the Conference Version" subsection
+%%     (Sec.~\ref{sec:differences}, requirement 6).
+%%
+%%  ON THE REPLICATION RESULT -- read before submitting. The new experiments
+%%  do not simply confirm the conference paper. Hybrid-CASR's forward-F1
+%%  lead does NOT reproduce on the second backbone (-0.006 vs the published
+%%  +0.016); its backward-retention advantage and the ranking of the weaker
+%%  methods DO. The text reports this as measured and reframes the method's
+%%  contribution as a retention/accuracy trade. This is deliberate and, we
+%%  believe, the stronger paper -- but it is a change of claim relative to
+%%  the conference version and all three authors should agree to it.
+%%
+%%  ALSO NOTE the "Metric definition" paragraph in Threats to Validity: the
+%%  reference implementation computes sklearn's default binary F1 (positive
+%%  class only), not a macro average. Every number in both the conference
+%%  and the extended version is on that same footing, so no comparison or
+%%  ranking changes, but the paragraph states it explicitly. Keeping it is
+%%  the authors' call.
+%%   - Prose across carried-over sections has been rewritten to avoid
+%%     verbatim reuse (requirement 4). The authors should nonetheless run
+%%     a final similarity check before submission.
+%% ======================================================================
+
+\title{Selective Replay Under Temporal Drift: A Long-Horizon Study of Continual Fine-Tuning for LLM-Based Software Vulnerability Detection}
+
+\author{\authorname{Xuhui Dou\sup{1}, Hayretdin Bahsi\sup{2}\orcidAuthor{0000-0001-8882-4095} and Alejandro Guerra-Manzanares\sup{3}\orcidAuthor{0000-0002-3655-5804}\thanks{ \scriptsize{Corresponding author: alejandro.guerra@nottingham.edu.cn}}}
+\affiliation{\sup{1}University of Nottingham, Nottingham, UK}
+\affiliation{\sup{2}School of Informatics and Computing,
+Northern Arizona University, Flagstaff, USA}
+\affiliation{\sup{3}School of Computer Science, University of Nottingham, Ningbo, China}
+}
+
+\keywords{Software Vulnerability Detection, Continual Learning, Large Language Models, LLM, Selective Replay, Catastrophic Forgetting, Class Imbalance, Temporal Evaluation, Concept Drift, Parameter-Efficient Fine-Tuning}
+
+\abstract{Large Language Models (LLMs) are increasingly applied to source-code vulnerability detection, yet the prevailing evaluation practice of random train--test splitting ignores the temporal order in which vulnerabilities are disclosed and therefore reports optimistic performance that does not survive deployment. This article studies the problem that arises once such a detector is placed on a code base that keeps evolving: it must flag \emph{future} vulnerabilities while the statistical make-up of vulnerable and patched functions drifts underneath it. We fine-tune a parameter-efficient decoder model (microsoft/phi-2 with LoRA) continually across a CVE-linked corpus that runs from 2018 to 2024, segmented into forward-chained bi-monthly windows, and we contrast eight update strategies ranging from single-window and cumulative training to replay-based and regularisation-based continual learning. Central to the study is Hybrid Class-Aware Selective Replay (Hybrid-CASR), which fills its rehearsal buffer by combining uncertainty-driven selection with an enforced balance between VULNERABLE and FIXED functions. Extending our conference results, we add a full pairwise significance analysis (with Holm correction) across all methods, a stability-index characterisation of the plasticity--stability trade-off, and---centrally---a multi-seed replication of the core comparison on a second, deliberately dissimilar backbone (Qwen2.5-Coder-1.5B). The statistical analysis shows that the leading strategies form an indistinguishable top cluster, within which Hybrid-CASR is the steadiest and among the cheapest (roughly $24\%$ higher F1-per-minute than single-window training), and that heavy regularisation or oversized buffers actively hurt under sharp drift. The replication then separates what generalises from what does not: the ordering of the weaker strategies transfers, and Hybrid-CASR retains better than the baseline at every backward lag, but its forward-accuracy lead does not reproduce---it becomes $-0.006$, smaller than the seed-to-seed spread of either method. Lagged retention profiles additionally reveal that a replay method with a fixed horizon collapses exactly where its buffer ends, showing that short-lag retention cannot distinguish knowledge consolidated in parameters from data merely shown again. We therefore restate the case for class-balanced selective replay as a trade---measurably better retention at a forward cost indistinguishable from zero---rather than as an accuracy gain, and we caution both that differences of a few thousandths of F1 require multi-seed estimation to be meaningful, and that absolute performance keeps such systems in a decision-support rather than an autonomous role.}
+
+\onecolumn \maketitle \normalsize \setcounter{footnote}{0} \vfill
+
+%% ======================================================================
+\section{\uppercase{Introduction}}
+\label{sec:introduction}
+
+\noindent Software vulnerabilities continue to pose a first-order risk to modern computing infrastructure. Disclosure registries such as Common Vulnerabilities and Exposures (CVE) record a steady climb in reported flaws: monthly disclosures rose from a few hundred in 2018 to several thousand by 2024, extending a longer-running trend in which both the volume of vulnerabilities and the pressure to exploit them keep growing~\citep{Theisen2020VulnPrediction}. Classical static-analysis tooling scales poorly against this backdrop; industrial deployments routinely report false-positive rates beyond $80\%$, which erodes their practical value for developers and security teams~\citep{Morrison2015HotSOS}.
+
+Data-driven vulnerability prediction was introduced to relieve exactly this burden, learning discriminative patterns from historical examples through techniques that span metric-based and history-based models, graph neural networks, and code-specific deep architectures~\citep{Zhou2019Devign}. The latest addition to this lineage is the decoder-style LLM: fine-tuned on labelled vulnerability data, such models are competitive at function-level classification~\citep{Konno2025Taltech}. What has not kept pace is evaluation methodology. Most reported results still come from random or mixed splits that disregard chronology, an arrangement that leaks future information into training and inflates apparent accuracy~\citep{Lyu2022Splitting,Fischer2025DupLeak}. Deployment tells a different story: models operate on code bases whose distribution of vulnerable and non-vulnerable functions shifts over time---a concept-drift regime~\citep{Hinder2024ConceptDrift} in which a one-off offline fit ages quickly.
+
+Continual learning (CL) provides a disciplined response, updating a model on incoming data while trying to protect what it already knows~\citep{Wu2024CLSurvey}. Its defining obstacle is \emph{catastrophic forgetting}: accuracy on earlier tasks collapses as the model chases new ones. A vulnerability detector maintained across years of changing code therefore needs a strategy that dampens forgetting without becoming deaf to genuinely new attack patterns. How the various CL strategies actually behave in this specific, temporally non-stationary, class-imbalanced setting has remained largely uncharted---and that gap is what this article addresses.
+
+We cast temporal vulnerability detection as binary function-level classification, labelling each function vulnerable or fixed. Our corpus is assembled from CVEfixes~\citep{Bhandari2021CVEfixes} and related sources, covers 2018--2024, and is cut into bi-monthly windows. A parameter-efficient decoder, microsoft/phi-2, is adapted with LoRA~\citep{Hu2021LoRA} and rolled forward across 42 chained windows. Three difficulties surface together in this regime: forgetting when updates see only the most recent window; a strong, time-varying imbalance between vulnerable and fixed functions; and a compute budget that rules out retraining on the full history at every step.
+
+This article is the extended version of our conference paper~\citep{Dou2026ICISSP}. It preserves the original protocol and reported results, and adds both new analysis and a new set of experiments on a second backbone (detailed in Section~\ref{sec:differences}). We organise the work around the four questions carried over from the thesis this line of work builds on, plus a fifth that the extension exists to answer:
+\begin{itemize}
+    \item \textbf{RQ1:} How do continual learning strategies compare when applied to a parameter-efficient decoder LLM (phi-2 with LoRA) for temporal vulnerability detection?
+    \item \textbf{RQ2:} What effect does temporal window granularity (monthly to annual) have on forward prediction performance and its stability?
+    \item \textbf{RQ3:} To what extent can these strategies curb catastrophic forgetting while remaining plastic to new vulnerability patterns?
+    \item \textbf{RQ4:} What computational trade-offs do the strategies impose, and how do these bear on single-GPU deployment?
+    \item \textbf{RQ5 (new):} Which of these findings are properties of continual-learning strategy, and which are properties of the particular backbone they were measured on?
+\end{itemize}
+
+Against RQ1--RQ4 we evaluate eight strategies---single-window fine-tuning, cumulative training, replay variants and regularisation variants---on a common phi-2 backbone; against RQ5 we re-run the core comparison on a second, deliberately dissimilar decoder. Our contributions are:
+\begin{enumerate}
+    \item \textbf{Deployment-faithful temporal protocol.} A forward-chained evaluation for CVE-linked code with lagged backward probes (IBR@1/3/5/6), training only on vulnerabilities known at time $t$ before predicting those disclosed at $t{+}1$, thereby removing the leakage that distorts random-split studies~\citep{Lyu2022Splitting}.
+    \item \textbf{Granularity ablation.} A systematic sweep over 1-, 2-, 3-, 6- and 12-month windows, showing that Macro-F1 stays within a narrow $0.651$--$0.667$ band and that no single segmentation is clearly optimal.
+    \item \textbf{Hybrid-CASR.} A confidence-aware, class-balanced replay rule~\citep{Aljundi2019MIR} that reaches the best mean Macro-F1 ($0.667$) with strong backward retention, presented here with a formal algorithm.
+    \item \textbf{Full statistical and stability analysis (new).} A complete pairwise significance matrix with Holm correction across all eight strategies, plus a stability-index treatment of the plasticity--stability frontier, quantifying which apparent differences are real and which are noise.
+    \item \textbf{Cross-architecture replication (new).} A multi-seed re-run of the core comparison on a second backbone (\texttt{Qwen2.5-Coder-1.5B}), which separates the findings that transfer from the one that does not: the ranking of the weaker strategies and Hybrid-CASR's retention advantage both hold, while its forward-accuracy lead does not reproduce.
+    \item \textbf{Resource--performance analysis.} An accuracy--efficiency accounting (F1-per-minute, memory, relative speed-up) showing Hybrid-CASR near the frontier and cumulative training as prohibitively costly for its marginal gain.
+\end{enumerate}
+
+To our knowledge this remains the first systematic evaluation of LLM-based vulnerability detection under a long-horizon, non-stationary temporal protocol spanning dozens of real windows, and it establishes a reproducible base for later work.
+
+%% ======================================================================
+\section{\uppercase{Related Work}}
+\label{sec:related}
+
+\noindent This section situates our study within three lines of research: learning-based vulnerability detection, continual learning for language models, and temporally-honest evaluation of code models. The conference version treated these threads inline; we develop them here as dedicated background, which is the primary expository addition of the extended version.
+
+\subsection{Learning-Based Vulnerability Detection}
+\label{sec:related-vd}
+
+\noindent Early data-driven detectors leaned on software metrics and change history, correlating complexity, churn and dependency signals with defect or vulnerability proneness~\citep{Shin2011Complexity,Jimenez2016VPM}. These models are cheap and interpretable but shallow: they describe code without reading it. Representation-learning approaches closed part of that gap. Graph-based detectors such as Devign~\citep{Zhou2019Devign} and BGNN4VD~\citep{Cao2021BGNN4VD} encode control- and data-flow structure and markedly improve function-level discrimination on static benchmarks. In parallel, pretrained encoders of code---CodeBERT being the canonical example~\citep{Feng2020CodeBERT}---brought transfer learning to the task, yielding strong numbers when train and test are drawn from the same distribution.
+
+More recently the field has moved toward decoder-style LLMs. \citet{Konno2025Taltech} fine-tuned decoder models across several programming languages and code granularities and reported consistent gains over encoder baselines, particularly when evaluation respects code boundaries. Our study inherits this decoder-first stance, but departs from the bulk of the literature in one respect: rather than asking how well a model classifies a held-out sample from the same period, we ask how well it anticipates vulnerabilities disclosed \emph{after} the data it was trained on.
+
+\subsection{Continual Learning for Neural and Language Models}
+\label{sec:related-cl}
+
+\noindent Continual learning seeks to accumulate knowledge across a stream of tasks without erasing earlier competence~\citep{VandeVen2022CLSurvey,Wu2024CLSurvey}. Three broad families recur. \emph{Rehearsal} methods retain or regenerate past examples and interleave them with new data; iCaRL~\citep{Rebuffi2017iCaRL} popularised exemplar replay, and later work refined which examples to keep---most relevantly, maximally-interfered retrieval~\citep{Aljundi2019MIR}, which prioritises samples whose predictions are most disturbed by the incoming update. \emph{Regularisation} methods instead constrain how parameters may move; gradient episodic memory~\citep{LopezPaz2017GEM} and A-GEM~\citep{Chaudhry2019AGEM} project updates away from directions that would harm past tasks. \emph{Architecture} methods allocate capacity per task, for example through adapter composition~\citep{Pfeiffer2021AdapterFusion}.
+
+For LLMs specifically, the cost of full retraining has made parameter-efficient continual tuning attractive. LoRA~\citep{Hu2021LoRA} and its quantised variant QLoRA~\citep{Dettmers2023QLoRA} confine updates to small low-rank adapters; ConPET~\citep{Song2023ConPET} and related methods add orthogonality or expansion mechanisms to protect earlier adapters~\citep{Qiao2024BotherLess}. \citet{Han2023CLCompare} compared rehearsal variants and identified buffer size and selection policy as the decisive design axes---a finding our results both confirm and qualify, since we observe that a \emph{larger} buffer (Replay-3P) can underperform a smaller, better-chosen one. What is missing from this literature is an evaluation under genuine, measured concept drift rather than artificially constructed task boundaries; vulnerability disclosure supplies exactly such a stream.
+
+\subsection{Temporal and Leakage-Aware Evaluation of Code Models}
+\label{sec:related-eval}
+
+\noindent A growing body of work warns that how one splits data dominates reported performance. \citet{Lyu2022Splitting} showed across AIOps tasks that temporal splitting yields markedly more conservative---and more realistic---estimates than random splitting. \citet{Allamanis2019Duplication} demonstrated that code duplication across splits can inflate accuracy by tens of points, and \citet{Fischer2025DupLeak} extended this specifically to LLM evaluation, where near-duplicate functions across corpora quietly leak labels. Benchmark efforts such as CodeXGLUE~\citep{Lu2021CodeXGLUE} have accordingly begun to recommend temporally-aware protocols. On the data side, CVEfixes~\citep{Bhandari2021CVEfixes} enables large-scale CVE-to-commit linking at some cost in precision relative to manual curation~\citep{Ponta2019Dataset}, and concept-drift theory~\citep{Hinder2024ConceptDrift} supplies the vocabulary---sudden versus gradual drift---for describing how vulnerability distributions move. Our protocol operationalises these recommendations end to end: disclosure-clock timestamps, timeline-wide deduplication, and strict forward chaining with lagged backward probes.
+
+%% ======================================================================
+\section{\uppercase{Methodology}}
+\label{sec:method}
+
+This section describes the experimental setup, the construction of the temporal corpus, and the metrics and statistical machinery used to interpret the results.
+
+\subsection{Experimental Setup}
+\label{sec:setup}
+
+\subsubsection{Model Architecture and Configuration}
+\label{sec:model-config}
+
+\noindent
+We build on \texttt{microsoft/phi-2}, a 2.7B-parameter decoder-only model. The scale is chosen deliberately. Sub-1B models tend to under-represent the semantics of real code, whereas models past 7B demand multi-GPU hosting that is incompatible with running dozens of window-wise updates. At 2.7B the entire temporal sweep fits on a single GPU while retaining competitive code understanding.
+
+The decoder choice is likewise motivated by the temporal setting. Encoders such as CodeBERT read context bidirectionally and score well on static benchmarks~\citep{Feng2020CodeBERT}, but bidirectional attention can absorb signal from tokens that, in a forward-looking protocol, ought to be unseen; encoders have also been observed to degrade under temporal evaluation~\citep{Lu2021CodeXGLUE}. A causal decoder processes code left to right, which matches a world where future code genuinely does not exist yet, and decoder LLMs have shown steadier behaviour across granularities under temporal evaluation~\citep{Konno2025Taltech}.
+
+Adaptation uses Low-Rank Adaptation~\citep{Hu2021LoRA}, applied to both attention and MLP projections at rank $r=16$. The scaling factor $\alpha=32$ and dropout $p=0.05$ were fixed on a held-out validation period, trading adaptation capacity against over-fitting to any single window. Backbone weights stay frozen throughout, so representations remain comparable across windows while task adaptation flows entirely through the low-rank updates---a design consistent with parameter-efficient continual methods that curb forgetting~\citep{Qiao2024BotherLess}. Table~\ref{tab:config} lists the configuration held constant across conditions.
+
+\begin{table}[t]
+  \centering
+  \caption{Training configuration held constant across all experimental conditions. Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+  \label{tab:config}
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{ll ll}
+      \hline
+      \textbf{Component} & \textbf{Setting} & \textbf{Component} & \textbf{Setting} \\
+      \hline
+      Base model & \texttt{microsoft/phi-2} & Learning rate & $2\times10^{-4}$ \\
+      Classification head & Binary (2 logits) & Weight decay & 0 \\
+      LoRA rank $r$ & 16 & Training epochs & 3 \\
+      LoRA $\alpha$ & 32 & Batch size (default) & 32 \\
+      LoRA dropout & 0.05 & Batch size (granularity) & 4 \\
+      Optimizer & AdamW & Evaluation frequency & Per epoch \\
+      Decision threshold & 0.5 (fixed) & Numerical precision & FP32 \\
+      \hline
+    \end{tabular}%
+  }
+\end{table}
+
+All runs use Google Colab Pro with a single NVIDIA A100 (40\,GB). The stack is PyTorch~2.0, HuggingFace \texttt{transformers}~4.35 and \texttt{peft}~0.6, with pinned versions for reproducibility. Wall-clock time and peak memory are logged per window for the cost analysis of Section~\ref{sec:resource-performance}.
+
+\subsection{Dataset Construction and Temporal Design}
+\label{sec:dataset}
+
+\subsubsection{Data Sources and Quality Control}
+\label{sec:sources}
+
+\noindent
+The corpus draws on CVE records from 2018--2024 linked to their fixing commits through CVEfixes~\citep{Bhandari2021CVEfixes}, which traces CVE identifiers appearing in commit messages and issue trackers. This span is recent enough to reflect current vulnerability patterns yet long enough for temporal analysis. Because manual curation buys precision at the expense of coverage~\citep{Ponta2019Dataset}, automated linking is the pragmatic choice at this scale. We restrict attention to function-level instances in the corpus's dominant languages (chiefly C/C++), dropping other languages to keep the population homogeneous.
+
+Records marked ``Rejected'' in the CVE database are discarded as likely false positives or duplicates. Where several commits reference one CVE, we prefer the commit that removes the vulnerable pattern over preparatory refactors or documentation edits.
+
+Temporal anchoring underpins the whole design. Each instance is stamped with its CVE \emph{disclosure} date, not its commit date, because disclosure is what a practitioner would actually have known at decision time; commits frequently predate disclosure during coordinated release, and using them would smuggle future knowledge into training. The disclosure clock thus guarantees that a model trained at time $t$ predicts $t{+}1$ using only information available by $t$~\citep{Lu2021CodeXGLUE}.
+
+\subsubsection{Function-Level Instance Generation}
+\label{sec:instances}
+
+\noindent
+For every CVE--commit pair the pipeline retrieves two function versions: the vulnerable $f^{\text{pre}}$ from the parent revision and the patched $f^{\text{post}}$ from the fix. This pairing supplies naturally matched labels:
+\begin{itemize}
+    \item Vulnerable: $(f^{\text{pre}}, y=1)$, code that still carries the flaw;
+    \item Fixed: $(f^{\text{post}}, y=0)$, the remediated code.
+\end{itemize}
+Commits touching several files or functions yield several pairs, each processed independently to keep function-level granularity aligned with review units. Functions longer than the context window are truncated from the tail.
+
+Deduplication spans the whole timeline, targeting a threat that \citet{Allamanis2019Duplication} quantified---duplicate code across splits can inflate scores by up to $40\%$---and that \citet{Fischer2025DupLeak} confirmed for LLMs. Back-ported fixes and mirrored forks routinely produce near-duplicates here, so we hash normalised function bodies (whitespace and comments removed) and keep only the earliest occurrence, enforcing
+$\mathcal{D}_{t+1} \cap \bigl(\bigcup_{i \leq t} \mathcal{D}_i\bigr) = \emptyset$
+so that no function appears in both a training window and a later test window.
+
+\subsubsection{Temporal Window Granularity}
+\label{sec:windows}
+
+\noindent
+The 2018--2024 span is divided into bi-monthly windows, giving 42 consecutive periods. Two-month windows sit at a deliberate midpoint: monthly windows resolve time finely but suffer sparse positives in quiet months, while quarterly-or-longer windows are steadier yet blur distinct vulnerability regimes together. The rising disclosure counts match \citet{Theisen2020VulnPrediction}, who also cautioned that models fit on older data may not carry forward.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{images/bi_monthly_counts.pdf}
+\caption{Distribution of vulnerability disclosures across bi-monthly windows (2018--2024). Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+\label{fig:disclosure-volume}
+\end{figure*}
+
+Figure~\ref{fig:disclosure-volume} shows the disclosure volume per window. Counts climb sharply after 2021---some windows exceed 2{,}000 disclosures against fewer than 400 early on---likely reflecting broader auditing, automated discovery and wider open-source adoption. Beyond raw volume, shifting languages, frameworks and dependency practices drive the concept drift catalogued by \citet{Hinder2024ConceptDrift}, who separate sudden transitions (such as 2021--2022) from gradual movement within otherwise stable stretches.
+
+Bi-monthly windows hold a median positive prevalence of $42\%$ (IQR $35$--$49\%$), enough vulnerable examples for stable gradients without extreme skew, and a median of 743 instances per window (IQR $531$--$1394$).
+
+\subsection{Experimental Protocol}
+\label{sec:protocol}
+
+\subsubsection{Forward Temporal Evaluation Framework}
+\label{sec:forward-eval}
+
+\noindent
+The protocol enforces strict forward chaining. A model trained on window $W_t$ is tested only on $W_{t+1}$, reproducing the real task of predicting the next period from the past alone. One-step-ahead evaluation blocks leakage and gives an honest read on temporal generalisation, following the aggregation advice of \citet{Lyu2022Splitting}. Three reference configurations frame the comparison:
+
+\begin{itemize}
+    \item \textbf{Zero-shot.} Pretrained phi-2 with no fine-tuning, testing how far generic code understanding transfers; it lands around $50$--$55\%$ Macro-F1.
+    \item \textbf{Window-only.} From the same pretrained checkpoint, fine-tune on $W_t$ alone and discard both data and updates afterwards; this is the configuration in which forgetting is most exposed.
+    \item \textbf{Cumulative.} Fine-tune on all history to date, $\mathcal{D}^{\text{cum}}_t = \bigcup_{i=1}^{t} W_i$, an expensive near-upper-bound.
+\end{itemize}
+
+\subsubsection{Backward Retention Assessment}
+\label{sec:backward-eval}
+
+\noindent
+To measure preservation as well as prediction, after training on $W_t$ we also test on earlier windows $W_{t-k}$ for $k \in \{1,3,5,6\}$. The Immediate Backward Retention (IBR) at lag $k$ is the F1 on $W_{t-k}$ after training through $W_t$; comparing IBR across lags exposes the ``half-life'' of learned knowledge and, with forward F1, locates each method on the stability--plasticity axis~\citep{VandeVen2022CLSurvey}.
+
+\subsubsection{Continual Learning Strategies}
+\label{sec:cl-strategies}
+
+\noindent
+Six CL strategies sit on top of the LoRA backbone, alongside the baselines above.
+
+\textbf{Replay-based methods} rehearse buffered history during new-window training, following the exemplar-replay tradition of iCaRL~\citep{Rebuffi2017iCaRL}. Replay-1P buffers the immediately preceding window; Replay-3P keeps three. Buffers are FIFO with uniform sampling. \citet{Han2023CLCompare} found buffer size and selection to be the governing choices.
+
+\textbf{Confidence-Aware Selective Replay (CASR)} rehearses hard cases instead of random ones. Following maximally-interfered retrieval~\citep{Aljundi2019MIR}, instances whose maximum class probability falls below $\tau=0.7$, or that are misclassified, are retained preferentially, concentrating the buffer near decision boundaries.
+
+\textbf{Hybrid-CASR} is our contribution. Because FIXED dominates VULNERABLE in most windows, pure uncertainty selection (as in CASR) skews the buffer toward the majority class, since most uncertain cases are FIXED. Hybrid-CASR first samples an equal number of VULNERABLE and FIXED candidates, then ranks within each class by confidence; the buffer devotes $70\%$ of its slots to these high-uncertainty picks and the remaining $30\%$ to uniform draws for coverage. Algorithm~\ref{alg:hybrid-casr} states the procedure formally---a formalisation added in this extended version to replace the prose-only description of the conference paper.
+
+\begin{algorithm}[t]
+\SetAlgoLined
+\DontPrintSemicolon
+\KwIn{buffer $\mathcal{B}$; model $\theta$; buffer size $N$; uncertainty fraction $\rho=0.7$; threshold $\tau=0.7$}
+\KwOut{replay set $\mathcal{R}$, $|\mathcal{R}| \le N$}
+\BlankLine
+Partition $\mathcal{B}$ into $\mathcal{B}_{\text{vul}}$ ($y{=}1$) and $\mathcal{B}_{\text{fix}}$ ($y{=}0$)\;
+$n \gets \lfloor \min(|\mathcal{B}_{\text{vul}}|,|\mathcal{B}_{\text{fix}}|)\rfloor$\;
+Sample $n$ from each class $\rightarrow$ balanced candidate set $\mathcal{C}$\;
+\ForEach{$x \in \mathcal{C}$}{
+  $p \gets \mathrm{softmax}(f_\theta(x))$\;
+  $u(x) \gets -\!\sum_c p_c \log p_c$ \tcp*{predictive entropy}
+}
+Within each class, sort $\mathcal{C}$ by $u(\cdot)$ descending\;
+$\mathcal{R}_{\text{unc}} \gets$ top $\lfloor \rho N \rfloor$ by $u$, keeping class balance and prioritising $u(x)$ above the $\tau$-implied entropy\;
+$\mathcal{R}_{\text{cov}} \gets$ uniform sample of $\lceil (1-\rho) N \rceil$ from $\mathcal{B}\setminus\mathcal{R}_{\text{unc}}$\;
+$\mathcal{R} \gets \mathcal{R}_{\text{unc}} \cup \mathcal{R}_{\text{cov}}$\;
+\Return{$\mathcal{R}$}\;
+\caption{Hybrid-CASR buffer construction}
+\label{alg:hybrid-casr}
+\end{algorithm}
+
+\textbf{LB-CL (Label-Balanced Continual LoRA)} attacks imbalance through the loss rather than a buffer, weighting cross-entropy inversely to within-window class frequency. It needs no extra memory but is exposed under severe shift~\citep{Wu2024CLSurvey}.
+
+\textbf{OLoRA (Orthogonality-regularised LoRA)} protects past knowledge geometrically. Inspired by GEM~\citep{LopezPaz2017GEM} and A-GEM~\citep{Chaudhry2019AGEM}, it pushes each new adapter to stay approximately orthogonal to the subspace of past updates via a term $\beta \mathcal{L}_\perp(A_t, \mathcal{S}_{t-1})$ with $\beta=0.1$; \citet{Song2023ConPET} report such constraints can reduce forgetting in LLMs.
+
+Table~\ref{tab:cl_strategies} summarises the strategies and their memory footprints.
+
+\begin{table}[t]
+  \centering
+  \caption{Continual learning strategies with mechanisms and memory requirements. Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+  \label{tab:cl_strategies}
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{p{0.13\textwidth} p{0.42\textwidth} p{0.33\textwidth}}
+      \hline
+      \textbf{Strategy} & \textbf{Mechanism} & \textbf{Memory requirements} \\
+      \hline
+      Replay-1P   & Uniform sampling from previous window. &
+                    Buffer storing the immediately previous window. \\
+      Replay-3P   & Uniform sampling from 3 previous windows. &
+                    Buffer storing the last 3 windows. \\
+      CASR        & Uncertainty-based selective replay~\citep{Aljundi2019MIR}. &
+                    Buffer with prioritised uncertain samples. \\
+      Hybrid-CASR & CASR + class balancing (this work). &
+                    Buffer with class-balanced sampling across VULNERABLE / FIXED. \\
+      LB-CL       & Class-weighted loss~\citep{Wu2024CLSurvey}. &
+                    No extra memory beyond model parameters. \\
+      OLoRA       & Orthogonality constraints on LoRA updates. &
+                    Adapter parameters plus small subspace statistics. \\
+      \hline
+    \end{tabular}%
+  }
+\end{table}
+
+\subsection{Evaluation Metrics and Statistical Analysis}
+\label{sec:metrics}
+
+\subsubsection{Evaluation Metrics}
+\label{sec:eval-metrics}
+
+\noindent
+\textbf{Primary metric.} We report Macro-F1 at a fixed $0.5$ threshold, treating both classes as equally important: a missed vulnerability is a security risk, a false alarm is wasted developer effort. Unlike accuracy, Macro-F1 does not flatter a majority-class predictor under imbalance~\citep{Saito2015PRBetter}. For binary labels with per-class precision $\mathrm{P}_c$ and recall $\mathrm{R}_c$, $\mathrm{F1}_c = \tfrac{2\mathrm{P}_c\mathrm{R}_c}{\mathrm{P}_c+\mathrm{R}_c}$ and $\mathrm{Macro\text{-}F1} = \tfrac{1}{2}(\mathrm{F1}_0+\mathrm{F1}_1)$. Section~\ref{sec:disc-limitations} records one qualification to how this metric is realised in the reference implementation, which applies uniformly to every result reported here.
+
+\textbf{Temporal metrics.}
+\begin{itemize}
+    \item \textbf{Forward F1}: F1 on $W_{t+1}$ after training on $W_t$.
+    \item \textbf{IBR@k}: F1 on $W_{t-k}$ after training through $W_t$, $k\in\{1,3,5,6\}$.
+    \item \textbf{Stability index}: coefficient of variation (CV) of forward F1 across windows, i.e.\ $\mathrm{std}/\mathrm{mean}$; lower is steadier.
+\end{itemize}
+
+\subsubsection{Temporal Aggregation and Statistical Testing}
+\label{sec:statistics}
+
+\noindent
+Window-level scores are averaged as $\bar{m} = \frac{1}{K}\sum_{t=1}^{K} m_{t+1}$. Method comparisons use paired Wilcoxon signed-rank tests on window-wise differences, appropriate for the non-normal, bounded F1 distribution, with Cliff's $\delta$ as a non-parametric effect size. \emph{New in this version}, when comparing all method pairs simultaneously (Section~\ref{sec:pairwise}) we control the family-wise error rate with the Holm--Bonferroni procedure over the resulting comparisons, so that the multiplicity of tests does not manufacture spurious significance.
+
+\subsection{Resource--Performance Analysis}
+\label{sec:resource-analysis}
+
+\noindent
+Each run logs wall-clock time and peak GPU memory per window, giving a profile $\mathbf{r}_{t}^{(M)} = (\text{time}_t^{(M)}, \text{memory}_t^{(M)}, \mathrm{F1}_{t+1}^{(M)})$ from which accuracy--efficiency frontiers are built. Cumulative training reaches marginally higher F1 but at up to $15.9\times$ the training time of window-only in later windows.
+
+\subsection{Cross-Architecture Replication Protocol}
+\label{sec:replication}
+
+\noindent
+The sharpest threat to the conference study was that every conclusion rested on a single backbone. This extended version therefore re-runs the core comparison on a second, deliberately dissimilar decoder and asks whether the ranking survives. This subsection describes that replication; its results are reported in Section~\ref{sec:cross-arch}.
+
+\textbf{Second backbone.} We use \texttt{Qwen2.5-Coder-1.5B}: roughly half the parameter count of phi-2, a different pretraining corpus and tokeniser, and---unlike the general-purpose phi-2---a backbone specialised on code from the outset. The pairing is intentionally adversarial to our own result. If Hybrid-CASR's advantage were a property of selective replay rather than of one model, the smaller code-specialised model is where it should show most clearly, since it has the least general capacity to fall back on.
+
+\textbf{Corpus.} The original patch archive from the conference experiments was no longer recoverable, so the corpus was rebuilt from the same sources by the same procedure: NVD records were re-linked to their GitHub commits and $23{,}935$ patches were re-fetched, yielding $43{,}773$ function-level instances across the same 42 bi-monthly windows (the conference corpus held $43{,}451$). Measured against the per-window class counts published in the conference version, the rebuild differs by $-0.86\%$ overall, with a per-window median of $-0.66\%$ and a worst case of $4.6\%$; the shortfall is accounted for by 414 upstream commits that have since been deleted from GitHub. The rebuild is therefore very close to, but not identical with, the published corpus, and Section~\ref{sec:disc-limitations} states what that costs us.
+
+\textbf{Controls.} Every hyperparameter in Table~\ref{tab:config} is held at its published value---LoRA $r=16$, $\alpha=32$, dropout $0.05$, three epochs, learning rate $2\times10^{-4}$, batch size 32, FP32---so that backbone identity is the only variable that changes between the two arms. Two throughput optimisations were evaluated against this requirement rather than adopted for speed. Bfloat16 training ran about $1.5\times$ faster but moved fixed probe windows by up to $0.08$ F1, which would have confounded numerical precision with the architecture change, and was rejected; length-grouped batching ran about $1.95\times$ faster and moved the same probe windows by $0.005$, within run-to-run noise, and was adopted for both arms.
+
+\textbf{Seeds.} A difference of a few thousandths of F1 cannot be read off a single run. The two conditions that carry the central claim---window-only and Hybrid-CASR on the new backbone---were therefore each trained under three random seeds ($42/43/44$), and we report both the window-to-window standard deviation and the seed-to-seed spread. The remaining conditions were run under a single seed, which is adequate only because their gaps are an order of magnitude larger than the seed spread we measure. Hardware for the replication is a single NVIDIA RTX~5090 (32\,GB) with a CUDA~12.8 PyTorch build, \texttt{transformers}~5.15 and \texttt{peft}~0.20.
+
+\textbf{Metric.} All replication numbers are computed by the same metric implementation as the conference results, so the two are directly comparable; Section~\ref{sec:disc-limitations} records what that implementation actually computes.
+
+%% ======================================================================
+\section{\uppercase{Results}}
+\label{sec:results}
+
+\noindent
+This section reports findings from the 2018--2024 experiments, addressing the research questions through granularity effects, method comparison, the new pairwise-significance and stability analyses, knowledge retention, computational cost and error analysis. It closes with the cross-architecture replication (Section~\ref{sec:cross-arch}), which asks how much of the preceding picture is a property of the backbone.
+
+\subsection{Temporal Granularity Analysis}
+\label{sec:granularity-results}
+
+\noindent
+Granularity is examined with the window-only baseline across five time scales (RQ2), isolating window size while holding hyperparameters fixed (LoRA rank $16$, $\alpha=32$, dropout $0.05$, three epochs, learning rate $2\times10^{-4}$, batch size 8; the small batch is a memory concession for variable window sizes).
+
+\begin{table}[t]
+  \caption{Temporal granularity impact on forward evaluation. Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+  \label{tab:granularity}
+  \centering
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{lccccccc}
+      \hline
+      Granularity & Windows & Mean F1 & Std Dev & IQR & Min F1 & Max F1 \\
+      \hline
+      1-month     & 82 & 0.654 & 0.054 & 0.075 & 0.506 & 0.778 \\
+      2-month     & 41 & 0.651 & 0.044 & 0.058 & 0.539 & 0.714 \\
+      3-month     & 27 & 0.667 & 0.033 & 0.041 & 0.572 & 0.714 \\
+      6-month     & 13 & 0.669 & 0.029 & 0.032 & 0.611 & 0.702 \\
+      12-month    &  6 & 0.669 & 0.030 & 0.035 & 0.604 & 0.695 \\
+      \hline
+    \end{tabular}%
+  }
+\end{table}
+
+Table~\ref{tab:granularity} shows Macro-F1 confined to $0.651$--$0.667$ across granularities. Monthly windows reach $0.654$ but with the highest variance ($\mathrm{std}=0.054$), reflecting month-to-month swings in vulnerability mix; bi-monthly windows match the mean at lower variance ($\mathrm{std}=0.044$). Figure~\ref{fig:forward-granularity} makes the variance pattern visible: fine windows swing between peaks above $0.75$ and troughs below $0.55$, while coarse windows are smoother.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{images/fig_R1_granularity_f1.pdf}
+\caption{Forward one-step F1 across granularities (1, 2, 3, 6, 12 months). Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+\label{fig:forward-granularity}
+\end{figure}
+
+Quarterly and longer windows edge slightly higher ($0.667$--$0.669$) with progressively lower variance, the expected bias--variance pattern. The narrowness of the band ($0.651$--$0.669$) is itself the notable result: time scale barely moves aggregate effectiveness. Operationally this means update cadence can follow resource availability rather than accuracy, since quarterly retraining loses little against monthly. Misclassification analysis, however, indicates that granularities fail on \emph{different} vulnerability types---segmentation changes \emph{which} vulnerabilities are caught more than \emph{how many}.
+
+\subsection{Continual Learning Strategy Comparison}
+\label{sec:method-comparison}
+
+\noindent
+Eight strategies are compared under the bi-monthly protocol (RQ1, RQ3), sharing backbone and hyperparameters (batch size 32) and differing only in CL mechanism. To keep the comparison fair, analysis is restricted to the windows where every method completes training; the remaining windows are set aside.
+
+\begin{table}[t]
+\centering
+\caption{Forward evaluation of continual learning methods. Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+\label{tab:method-forward}
+  \centering
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{lccccc}
+      \hline
+      Method & Mean F1 & Std Dev & Min F1 & Max F1 & Win Rate \\
+      \hline
+      Hybrid-CASR & 0.667 & 0.037 & 0.566 & 0.728 & 46.3\% \\
+      Cumulative  & 0.661 & 0.039 & 0.571 & 0.749 & 41.5\% \\
+      Replay-1P   & 0.659 & 0.050 & 0.510 & 0.743 & 39.0\% \\
+      CASR        & 0.659 & 0.038 & 0.580 & 0.737 & 36.6\% \\
+      LB-CL       & 0.651 & 0.044 & 0.534 & 0.728 & 31.7\% \\
+      Window-only & 0.651 & 0.044 & 0.539 & 0.714 & 29.3\% \\
+      Replay-3P   & 0.622 & 0.045 & 0.497 & 0.698 & 24.4\% \\
+      OLoRA       & 0.599 & 0.046 & 0.464 & 0.698 & 17.1\% \\
+      Zero-shot   & 0.504 & 0.153 & 0.000 & 0.729 & 0.0\% \\
+     \hline
+    \end{tabular}%
+  }
+\end{table}
+
+Table~\ref{tab:method-forward} orders the methods by mean forward Macro-F1. Hybrid-CASR leads at $0.667$, a $0.016$ absolute ($2.5\%$ relative) gain over window-only ($0.651$); the conference version established this gain as statistically significant by a paired Wilcoxon test ($p=0.026$, Cliff's $\delta=0.103$). Cumulative training follows at $0.661$ despite its far larger compute budget, then Replay-1P and CASR at $0.659$. Window-only and LB-CL coincide at $0.651$, which already hints that a class-weighted loss alone adds little. Replay-3P ($0.622$) and OLoRA ($0.599$) trail, and zero-shot ($0.504$) is far behind and highly erratic.
+
+Figure~\ref{fig:method-comparison-2m} plots the forward trajectories. The CL methods hold a floor above $0.4$ F1 throughout, whereas zero-shot collapses toward zero in several windows---direct evidence that fine-tuning, however configured, buys robustness against drift that a frozen model lacks.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{images/R2_f1_curves_by_method.pdf}
+\caption{Forward F1 across all methods under the bi-monthly protocol. Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+\label{fig:method-comparison-2m}
+\end{figure}
+
+\subsection{Pairwise Significance Analysis}
+\label{sec:pairwise}
+
+\noindent
+The conference version tested only Hybrid-CASR against the window-only baseline. Because Table~\ref{tab:method-forward} clusters several methods within a few thousandths of F1, a natural question---new to this extended study---is which of the $\binom{9}{2}$ ranked gaps are statistically real once multiple testing is accounted for. Table~\ref{tab:pairwise} reports paired Wilcoxon signed-rank tests over the common evaluation windows, with $p$-values adjusted by the Holm--Bonferroni procedure across all pairs, together with Cliff's $\delta$ effect sizes.
+
+\begin{table*}[t]
+  \centering
+  \caption{Pairwise comparison of methods on common forward-evaluation windows. Upper triangle: Cliff's $\delta$ (positive means the row method scores higher). Lower triangle: Holm-adjusted paired-Wilcoxon $p$. Bold $p<0.05$. Analysis newly added in this extended version.}
+  \label{tab:pairwise}
+  \resizebox{\textwidth}{!}{%
+    \begin{tabular}{l|ccccccccc}
+      \hline
+       & H-CASR & Rep-1P & CASR & Cumul. & Win-only & LB-CL & Rep-3P & OLoRA & Zero \\
+      \hline
+      H-CASR    & ---   & $+.04$ & $+.12$ & $+.10$ & $+.19$ & $+.19$ & $+.53$ & $+.73$ & $+.74$ \\
+      Rep-1P    & $1.00$ & ---   & $+.06$ & $+.05$ & $+.13$ & $+.13$ & $+.46$ & $+.66$ & $+.68$ \\
+      CASR      & $1.00$ & $1.00$ & ---   & $-.00$ & $+.07$ & $+.08$ & $+.45$ & $+.68$ & $+.70$ \\
+      Cumul.    & $1.00$ & $1.00$ & $1.00$ & ---   & $+.07$ & $+.08$ & $+.42$ & $+.64$ & $+.68$ \\
+      Win-only  & $0.24$ & $0.66$ & $1.00$ & $0.68$ & ---   & $+.01$ & $+.37$ & $+.58$ & $+.63$ \\
+      LB-CL     & $0.66$ & $0.29$ & $0.80$ & $0.29$ & $1.00$ & ---   & $+.34$ & $+.56$ & $+.63$ \\
+      Rep-3P    & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & ---   & $+.27$ & $+.46$ \\
+      OLoRA     & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & ---   & $+.33$ \\
+      Zero      & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.000} & \textbf{.011} & \textbf{.099}$^\dagger$ & --- \\
+      \hline
+    \end{tabular}%
+  }
+  \vspace{1mm}
+  {\footnotesize $^\dagger$ OLoRA vs Zero-shot: raw $p=0.006$, Holm-adjusted $p=0.099$.}
+\end{table*}
+
+Three patterns stand out. First, the four leading strategies---Hybrid-CASR, Replay-1P, CASR and Cumulative---are \emph{statistically indistinguishable from one another} after correction (all adjusted $p=1.00$, $|\delta|\le 0.12$). Their ordering in Table~\ref{tab:method-forward} is therefore a ranking of central tendency, not a hierarchy of reliably separable methods; the practical choice among them turns on cost and stability rather than mean F1 alone. Second, the gap from this top cluster down to Replay-3P, OLoRA and zero-shot is large and unambiguous: every top-cluster method beats each of these three with adjusted $p<0.001$ and medium-to-large effect sizes ($\delta$ up to $0.74$). Third, LB-CL is essentially inseparable from window-only ($\delta=+.01$, adjusted $p=1.00$), confirming that reweighting the loss without a rehearsal buffer contributes little under this drift.
+
+These results temper and sharpen the conference conclusion. Hybrid-CASR's advantage over the \emph{simplest} baselines (window-only, LB-CL) is real in effect size, but its edge over the other strong replay methods is within noise---an honest reading that positions Hybrid-CASR as a best-in-cluster default rather than a categorical winner, and that motivates the cost and stability comparisons below as the true tie-breakers.
+
+\subsection{Knowledge Retention Analysis}
+\label{sec:retention}
+
+\noindent
+Deployment also demands that a model keep detecting patterns it has already seen. IBR at lag $k$ measures F1 on $W_{t-k}$ after training through $W_t$; we evaluate $k\in\{1,3,5,6\}$, where IBR@6 corresponds to roughly one year under bi-monthly windows.
+
+\begin{table}[t]
+  \centering
+  \caption{Knowledge retention by Immediate Backward Retention at multiple lags. Decay rate $=(\mathrm{IBR@1}-\mathrm{IBR@6})/\mathrm{IBR@1}$. Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+  \label{tab:retention-detailed}
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{lrrrrrr}
+      \hline
+      \textbf{Method} & \textbf{IBR@1} & \textbf{IBR@3} & \textbf{IBR@5} &
+      \textbf{IBR@6} & \textbf{Decay} & \textbf{AUC}$^a$ \\
+      \hline
+      Replay-1P   & 0.791 & 0.747 & 0.734 & 0.729 & 7.8\% & 0.750 \\
+      Hybrid-CASR & 0.741 & 0.726 & 0.716 & 0.710 & 4.2\% & 0.723 \\
+      CASR        & 0.734 & 0.719 & 0.707 & 0.706 & 3.8\% & 0.717 \\
+      LB-CL       & 0.718 & 0.703 & 0.691 & 0.687 & 4.3\% & 0.700 \\
+      Window-only & 0.713 & 0.701 & 0.689 & 0.693 & 2.8\% & 0.699 \\
+      Replay-3P   & 0.702 & 0.688 & 0.676 & 0.673 & 4.1\% & 0.685 \\
+      Cumulative  & 0.661 & 0.661 & 0.661 & 0.661 & 0.0\% & 0.661 \\
+      OLoRA       & 0.612 & 0.598 & 0.587 & 0.584 & 4.6\% & 0.595 \\
+      Zero-shot   & 0.493 & 0.493 & 0.493 & 0.493 & 0.0\% & 0.493 \\
+      \hline
+    \end{tabular}%
+  }
+  \vspace{1mm}
+  {\footnotesize $^a$Area under the retention curve, normalised to [0,1].}
+\end{table}
+
+Table~\ref{tab:retention-detailed} exposes distinct memory profiles. Replay-1P retains most at lag 1 (IBR@1 $=0.791$) but decays fastest ($7.8\%$). Hybrid-CASR holds a high plateau (IBR@1 $=0.741$) with gentler decay ($4.2\%$), a consequence of preserving hard, class-balanced exemplars. The cumulative baseline is perfectly flat (0\% decay) yet its \emph{absolute} retention ($0.661$) sits below most selective methods---an instructive paradox: retaining everything does not maximise what is remembered, because undifferentiated history interferes with adaptation under drift.
+
+\subsection{Stability--Plasticity and the Stability Index}
+\label{sec:stability}
+
+\noindent
+Forward accuracy (plasticity) and cross-window consistency (stability) together determine behaviour under drift. We summarise stability with the coefficient of variation (CV) of forward F1; Table~\ref{tab:stability} pairs each method's mean F1 with its CV, and Figure~\ref{fig:plasticity-stability} maps the two axes.
+
+\begin{table}[t]
+  \centering
+  \caption{Stability index (coefficient of variation of forward F1) against mean forward F1 on common windows. Lower CV is steadier. Newly added in this extended version.}
+  \label{tab:stability}
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{lcc}
+      \hline
+      Method & Mean F1 & Stability index (CV) $\downarrow$ \\
+      \hline
+      Hybrid-CASR & 0.665 & 0.059 \\
+      CASR        & 0.659 & 0.060 \\
+      Cumulative  & 0.658 & 0.068 \\
+      Window-only & 0.649 & 0.072 \\
+      LB-CL       & 0.649 & 0.072 \\
+      Replay-1P   & 0.659 & 0.077 \\
+      Replay-3P   & 0.621 & 0.077 \\
+      OLoRA       & 0.599 & 0.081 \\
+      Zero-shot   & 0.514 & 0.301 \\
+      \hline
+    \end{tabular}%
+  }
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{images/R3_plasticity_stability.pdf}
+\caption{Plasticity--stability trade-off across methods. Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+\label{fig:plasticity-stability}
+\end{figure}
+
+The stability index resolves the tie left open by Section~\ref{sec:pairwise}. Within the top cluster whose mean F1 is statistically inseparable, Hybrid-CASR and CASR are the \emph{steadiest} (CV $0.059$ and $0.060$), whereas Replay-1P---despite matching them on mean F1 and topping the IBR@1 ranking---is markedly more volatile (CV $0.077$, comparable to the much weaker Replay-3P). In other words, Replay-1P's strong average and strong immediate retention come with wider window-to-window swings, while Hybrid-CASR delivers the same average more consistently. Zero-shot's CV of $0.301$ quantifies the erratic behaviour visible in Figure~\ref{fig:method-comparison-2m}. Hybrid-CASR thus occupies the favourable upper-right region---high plasticity, high stability---because confidence-based selection concentrates learning on decision boundaries while class balancing blocks collapse toward the majority class.
+
+\subsection{Computational Cost and Efficiency}
+\label{sec:resource-performance}
+
+\noindent
+Cost governs how often a model can be refreshed. Table~\ref{tab:resources-detailed} averages time, memory and efficiency over the common windows.
+
+\begin{table}[t]
+  \caption{Resource consumption and efficiency, averaged across bi-monthly windows. Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+  \label{tab:resources-detailed}
+  \centering
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{lcccccc}
+      \hline
+      Method & Time (s) & Time (min) & Speedup & GPU (MB) & F1/min & Eff. \\
+      \hline
+      Hybrid-CASR &  432 &  7.2 & 1.20$\times$ & 19,847 & 0.093 & 124\% \\
+      Window-only &  520 &  8.7 & 1.00$\times$ & 13,525 & 0.075 & 100\% \\
+      Cumulative  & 8,291 & 138.2 & 0.06$\times$ & 13,525 & 0.005 &   6\% \\
+      \hline
+    \end{tabular}%
+  }
+\vspace{1mm}
+{\footnotesize Memory measured for LoRA fine-tuning in FP32 without quantisation. F1/min denotes F1 divided by training time in minutes.}
+\end{table}
+
+Hybrid-CASR is not only accurate but \emph{cheaper} than window-only ($432$\,s vs.\ $520$\,s), delivering $0.093$ F1-per-minute against $0.075$---a $24\%$ efficiency gain---because focusing rehearsal on hard cases shortens convergence. Its extra memory ($\sim$$47\%$ over baseline) is the price of the buffer and uncertainty bookkeeping. Cumulative training, at $138.2$ minutes per window for a statistically indistinguishable mean F1, is $15.9\times$ slower and only worsens as history grows; it is impractical for weekly or daily refresh. Read alongside Section~\ref{sec:pairwise}, cost becomes the decisive separator within the top cluster: when four methods tie on accuracy, the one that is also fastest and steadiest wins on engineering grounds.
+
+\subsection{Error Analysis and Challenging Scenarios}
+\label{sec:error-analysis}
+
+\noindent
+Windows where the window-only baseline struggles cluster around rapid shifts in disclosure patterns---major security events and coordinated campaigns. Table~\ref{tab:hard-windows} isolates two of the hardest, reporting each method's F1 and its improvement $\Delta\mathrm{F1}=\mathrm{F1}_{\text{method}}-\mathrm{F1}_{\text{window-only}}$.
+
+\begin{table}[t]
+  \caption{Method performance on challenging windows. Reproduced from the conference version~\citep{Dou2026ICISSP}.}
+  \label{tab:hard-windows}
+  \centering
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{lcccc}
+      \hline
+      Method & 2019\_M05--06 & $\Delta$F1 & 2020\_M05--06 & $\Delta$F1 \\
+      \hline
+      Window-only & 0.539 & ---    & 0.548 & ---    \\
+      Hybrid-CASR & 0.598 & +0.059 & 0.612 & +0.064 \\
+      CASR        & 0.606 & +0.067 & 0.597 & +0.049 \\
+      Replay-1P   & 0.584 & +0.045 & 0.588 & +0.040 \\
+      Cumulative  & 0.585 & +0.046 & 0.574 & +0.026 \\
+      LB-CL       & 0.557 & +0.018 & 0.561 & +0.013 \\
+      Replay-3P   & 0.569 & +0.030 & 0.520 & -0.028 \\
+      OLoRA       & 0.478 & -0.061 & 0.464 & -0.084 \\
+      Zero-shot   & 0.412 & -0.127 & 0.439 & -0.109 \\
+      \hline
+    \end{tabular}%
+  }
+\end{table}
+
+Both windows coincide with landscape shifts: 2019\_M05--06 carries a wave of processor-related vulnerabilities in the wake of Spectre/Meltdown, and 2020\_M05--06 reflects early-pandemic digitalisation opening new attack surfaces. Selective replay (Hybrid-CASR, CASR) stays resilient, while heavy regularisation (OLoRA) and oversized replay (Replay-3P) can drop \emph{below} the baseline---over-constraining the model blocks the very adaptation these windows demand.
+
+\subsection{Cross-Architecture Generalisation}
+\label{sec:cross-arch}
+
+\noindent
+Everything above rests on one backbone. Following the protocol of Section~\ref{sec:replication}, we now re-run the core comparison on \texttt{Qwen2.5-Coder-1.5B} and ask which of the conclusions are properties of selective replay and which were properties of phi-2. This subsection reports the principal new experiments of the extended version (RQ5).
+
+\textbf{Reading the tables.} One caveat governs everything that follows. Re-running the window-only baseline on phi-2 over the rebuilt corpus and the current dependency stack gives $0.7236$, not the $0.651$ published in the conference version. The gap is not small, and we did not attribute it: the rebuilt corpus, the move from \texttt{transformers}~4.35 to~5.15 and from \texttt{peft}~0.6 to~0.20 all changed at once. Its consequence for this section is procedural rather than substantive. The replication is internally consistent---one corpus, one code base, one dependency set, one hardware configuration across all of its runs---so comparisons \emph{within} Tables~\ref{tab:cross-arch} and~\ref{tab:cross-arch-ibr} are sound, but individual cells must not be read against Tables~\ref{tab:method-forward} or~\ref{tab:retention-detailed}. Where we compare against a conference result below, we compare \emph{differences between methods}, never absolute levels.
+
+\begin{table}[t]
+  \centering
+  \caption{Forward F1 under the cross-architecture replication. $\Delta$ and $p$ are paired Wilcoxon signed-rank tests against the window-only baseline \emph{on the same backbone}, over the 41 common windows, after averaging across seeds. Newly added in this extended version.}
+  \label{tab:cross-arch}
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{llcccccr}
+      \hline
+      \textbf{Backbone} & \textbf{Method} & \textbf{Seeds} & \textbf{Mean} &
+      \textbf{SD$_w$} & \textbf{SD$_s$} & \textbf{$\Delta$} & \textbf{$p$} \\
+      \hline
+      phi-2 & Window-only & 1 & 0.7236 & 0.0565 & ---    & ---    & ---  \\
+      \hline
+      Qwen  & Window-only & 3 & 0.6829 & 0.0556 & 0.0045 & ---    & ---  \\
+      Qwen  & Hybrid-CASR & 3 & 0.6774 & 0.0532 & 0.0066 & $-0.0056$ & $0.032$ \\
+      Qwen  & Replay-3P   & 1 & 0.6458 & 0.0518 & ---    & $-0.0371$ & $<\!.0001$ \\
+      Qwen  & OLoRA       & 1 & 0.5945 & 0.0424 & ---    & $-0.0884$ & $<\!.0001$ \\
+      \hline
+    \end{tabular}%
+  }
+  \vspace{1mm}
+  {\footnotesize SD$_w$ is the standard deviation across evaluation windows; SD$_s$ is the standard deviation across random seeds. Seed ranges: Window-only $0.6780$--$0.6868$, Hybrid-CASR $0.6732$--$0.6850$.}
+\end{table}
+
+\textbf{The forward advantage does not survive the backbone change.} On phi-2 the conference version measured Hybrid-CASR ahead of window-only by $+0.016$. On Qwen2.5-Coder-1.5B the same comparison gives $-0.0056$ (Table~\ref{tab:cross-arch}). Two facts must be reported together here, because either alone misleads. The difference is significant under a window-paired Wilcoxon test ($p=0.032$); but it is \emph{smaller than Hybrid-CASR's own seed-to-seed standard deviation} ($0.0066$), and the two methods' seed ranges overlap ($0.6780$--$0.6868$ against $0.6732$--$0.6850$). The defensible reading is therefore that the forward advantage \emph{fails to reproduce} on a second architecture---not that it significantly reverses. Reporting the $p$-value without the seed overlap would be selective presentation of our own result.
+
+The seed sweep carries a methodological point of its own. Computed from a single seed, this same comparison gives $-0.0136$ at $p=0.0022$; adding two more seeds halves the effect to $-0.0056$ at $p=0.032$. An effect that shrinks by half as replication increases is an effect estimated at the edge of what a single run can resolve---and that caution applies with equal force to the conference version's original $+0.016$, which was also a single-run estimate.
+
+\begin{table}[t]
+  \centering
+  \caption{Immediate Backward Retention under the cross-architecture replication. Decay $=(\mathrm{IBR@1}-\mathrm{IBR@6})/\mathrm{IBR@1}$. Absolute levels are not comparable with Table~\ref{tab:retention-detailed} (see text). Newly added in this extended version.}
+  \label{tab:cross-arch-ibr}
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{llccccr}
+      \hline
+      \textbf{Backbone} & \textbf{Method} & \textbf{@1} & \textbf{@3} &
+      \textbf{@5} & \textbf{@6} & \textbf{Decay} \\
+      \hline
+      phi-2 & Window-only & 0.8991 & 0.8492 & 0.8263 & 0.8225 & 8.5\% \\
+      \hline
+      Qwen  & Hybrid-CASR & 0.9081 & 0.8123 & 0.7702 & 0.7552 & 16.8\% \\
+      Qwen  & Window-only & 0.8799 & 0.7961 & 0.7646 & 0.7537 & 14.3\% \\
+      Qwen  & Replay-3P   & 0.8936 & 0.6446 & 0.6523 & 0.6400 & 28.4\% \\
+      Qwen  & OLoRA       & 0.6021 & 0.5934 & 0.5839 & 0.5935 & 1.4\% \\
+      \hline
+    \end{tabular}%
+  }
+\end{table}
+
+\textbf{Backward retention behaves in the opposite direction, and it does transfer.} On the new backbone Hybrid-CASR leads window-only at \emph{all four} lags, and the margin decays monotonically with temporal distance: $+0.028$ at lag 1, $+0.016$ at lag 3, $+0.006$ at lag 5, $+0.002$ at lag 6 (Table~\ref{tab:cross-arch-ibr}). That shape is exactly what the mechanism predicts, since the buffer draws from $W_{t-1}$ and $W_{t-2}$ and its protective effect should therefore fade as the probe moves out of buffer range. Taken with the forward result, the honest summary of Hybrid-CASR on a second architecture is a \emph{trade}: it buys a measurable improvement in retention at a forward cost that is statistically indistinguishable from zero at the resolution of three seeds. That is a narrower claim than the conference version's, and it sits squarely inside the stability--plasticity frame the paper already uses---which is arguably a better home for it than an unqualified accuracy win.
+
+\textbf{The bottom of the ranking is architecture-independent.} Replay-3P ($-0.0371$) and OLoRA ($-0.0884$) remain the two weakest methods on Qwen, in the same order as on phi-2 ($0.622$ and $0.599$ in Table~\ref{tab:method-forward}). Both deficits are six to twenty times the seed spread we measured, so a single seed suffices to establish them. Whatever is wrong with these two strategies is not a property of the backbone.
+
+\textbf{A mechanistic reading of Replay-3P.} Its retention curve is the most informative single row in Table~\ref{tab:cross-arch-ibr}. Despite finishing second-to-last on forward F1, Replay-3P posts an IBR@1 of $0.8936$---above the window-only baseline ($0.8799$) and behind only Hybrid-CASR ($0.9081$)---and then falls to $0.6446$ at lag 3, a drop of $0.25$ that no other method exhibits. The break falls precisely at the edge of its replay horizon: it rehearses $W_{t-1}$ and $W_{t-2}$, and its retention collapses at the first probe that lies outside them. The natural reading is that Replay-3P's apparent retention is supplied by the replayed data itself rather than by knowledge accumulated in its parameters. Methods that carry adapter state forward across windows---window-only and Hybrid-CASR---instead decay smoothly, with no discontinuity at any particular lag. Retention measured at short lags therefore cannot distinguish a model that has \emph{remembered} from one that has merely been \emph{re-shown}, and probing at several lags, as we do, is what separates them.
+
+\textbf{An observation we decline to turn into a conclusion.} The larger backbone retains better: phi-2 decays $8.5\%$ from lag 1 to lag 6 against Qwen's $14.3\%$, and leads on forward F1 as well ($0.7236$ against $0.6829$). It is tempting to read this as a scale effect. We do not, for two reasons: the phi-2 arm has a single seed, and the two models differ simultaneously in parameter count, pretraining corpus and architecture family, so nothing in this design separates those three. We report the observation and leave the attribution to a study that varies size within one model family.
+
+%% ======================================================================
+\section{\uppercase{Discussion}}
+\label{sec:discussion}
+
+\subsection{Interpretation of Key Findings}
+\label{sec:disc-interpretation}
+
+\noindent
+Two headline observations organise the discussion. The first is the flatness of performance across granularities ($0.651$--$0.669$), which unsettles the common assumption that some window size must be clearly best. Viewed through concept drift~\citep{Hinder2024ConceptDrift}, the corpus mixes gradual movement inside stable stretches with sharp transitions such as the 2021--2022 doubling of disclosures, and the different granularities appear to absorb this mixture comparably.
+
+The second is that more data does not translate into a better model here: cumulative training gains only $0.010$ F1 over window-only for a $15.9\times$ cost, echoing \citet{Morrison2015HotSOS} on the limited marginal value of extra historical data in vulnerability prediction. The retention results deepen the point---cumulative training is perfectly stable yet retains \emph{less} in absolute terms (IBR@1 $=0.661$) than Replay-1P ($0.791$) or Hybrid-CASR ($0.741$)---suggesting that indiscriminate memory can interfere with, rather than reinforce, adaptation under drift.
+
+The new pairwise analysis (Section~\ref{sec:pairwise}) qualifies how far these rankings should be pushed. Because the four leading methods are statistically inseparable, the contribution of Hybrid-CASR is best framed not as ``highest F1'' but as ``the top-cluster method that is simultaneously the steadiest (Section~\ref{sec:stability}) and among the cheapest (Section~\ref{sec:resource-performance})''. This is a more defensible and more useful claim than a bare mean-F1 win.
+
+The cross-architecture replication (Section~\ref{sec:cross-arch}) pushes that qualification one step further, and in a direction we did not choose. On a second backbone the forward-accuracy lead is gone---$-0.0056$ where phi-2 gave $+0.016$, and small enough that the two methods' seed ranges overlap. What survives the change of architecture is the retention advantage, present at every lag, and the ordering of the weaker strategies. The three findings compose into a single coherent statement rather than a contradiction: Hybrid-CASR's forward gain was always inside the top cluster's noise band, as Section~\ref{sec:pairwise} had already indicated on phi-2 alone, and a quantity that is statistically indistinguishable from its neighbours on one architecture is precisely the quantity that should not be expected to reproduce on another. The retention effect, which is mechanistically tied to what the buffer holds, does reproduce. We therefore state the method's contribution as a trade---retention bought at negligible forward cost---rather than as an accuracy improvement, and we regard the reframing as the single most useful outcome of this extension.
+
+\subsection{Theoretical Implications}
+\label{sec:disc-theory}
+
+\noindent
+Hybrid-CASR's behaviour underlines the value of \emph{selective} memory in code-based CL. Maximally-interfered retrieval~\citep{Aljundi2019MIR} recommends rehearsing uncertain examples, and the principle transfers here---but only partly, because class ratios swing widely ($15$--$60\%$ positives across windows) and pure uncertainty selection then over-samples the majority class. Empirically, plain iCaRL-style replay~\citep{Rebuffi2017iCaRL} proved brittle in high-drift windows such as 2020\_M05--06; adding a reserved, class-balanced portion of the buffer is what restores robustness.
+
+The ranking among replay methods is itself informative. Replay-1P tops immediate retention yet, as Section~\ref{sec:stability} shows, is among the most volatile, and Replay-3P underperforms despite holding more history---contradicting the intuition that bigger buffers monotonically help~\citep{Han2023CLCompare} and suggesting that, under fast drift, \emph{controlled} forgetting beats comprehensive retention.
+
+The lagged retention profiles of Section~\ref{sec:cross-arch} add a distinction that the buffer-size framing alone cannot draw. Replay-3P's retention holds up inside its replay horizon and collapses immediately outside it, whereas methods that carry adapter state forward decay smoothly across all four lags. Two very different mechanisms can therefore produce a respectable IBR@1: knowledge genuinely consolidated in the parameters, and data simply shown again a window ago. They are indistinguishable at short lags and separate cleanly at long ones. This has a direct methodological consequence for continual-learning evaluation on code---single-lag retention metrics, still common in the literature, cannot support claims about consolidation---and it suggests that Replay-3P's weakness may be less about buffer size than about how little of what it rehearses is retained once rehearsal stops. OLoRA's weakness ($0.599$) similarly cautions against importing strict orthogonality constraints---successful in vision~\citep{LopezPaz2017GEM} and some LLM settings~\citep{Song2023ConPET}---into a domain where vulnerability types overlap and recur across time, so that orthogonalising away past directions also erases still-relevant signal.
+
+\subsection{Practical Implications}
+\label{sec:disc-practical}
+
+\noindent
+For deployment, Hybrid-CASR reaches $0.667$ F1 in $432$\,s per bi-monthly window, making frequent refresh feasible on one A100 while limiting staleness~\citep{Lyu2022Splitting}; its memory overhead ($19{,}847$ vs.\ $13{,}525$\,MB) is modest and in keeping with parameter-efficient practice~\citep{Hu2021LoRA,Dettmers2023QLoRA}. Where resources are tighter, window-only ($0.651$, $520$\,s, $13{,}525$\,MB) is a reasonable fallback---and, given the pairwise results, not a statistically inferior one on accuracy alone, only on stability. Cumulative training ($138.2$ min/window for $0.661$) is hard to justify.
+
+The replication sharpens this advice rather than overturning it. On a second backbone the accuracy argument for Hybrid-CASR disappears entirely, leaving retention, stability and cost as the whole of the case. That is still a sound case, but it is a conditional one: a team should adopt selective replay if old vulnerability patterns recur in its code base and being able to catch them a year later has value, and should be content with per-window fine-tuning if it does not. The corollary for anyone evaluating such a choice locally is that a difference of a few thousandths of F1 measured from one training run should not be acted on---ours halved when we replicated it across seeds.
+
+Window-to-window variability (Hybrid-CASR F1 in $0.464$--$0.728$) matches earlier reports of unstable vulnerability prediction~\citep{Jimenez2016VPM}. The hardest windows drag every method down, which is the strongest single argument in the paper for keeping a human in the loop during regime changes~\citep{Morrison2015HotSOS}.
+
+\subsection{Threats to Validity}
+\label{sec:disc-limitations}
+
+\noindent
+\textbf{Metric and granularity.} Macro-F1 weights classes symmetrically, which can misfit settings where a false negative costs more than a false positive~\citep{Davis2006PRROC,Saito2015PRBetter}; the fixed $0.5$ threshold makes the same symmetric assumption, whereas operators may prefer recall- or precision-heavy operating points. Function-level scope can also miss vulnerabilities that span functions or files~\citep{Shin2011Complexity}.
+
+\textbf{Metric definition.} One qualification to the above. The reference implementation that produced every number in this article---the conference results and the replication alike---computes F1 with scikit-learn's default binary averaging, which scores the positive (FIXED) class alone rather than averaging the two per-class scores as Section~\ref{sec:eval-metrics} defines. Because all methods, both backbones, all granularities and all windows are scored by that same function, no comparison, ranking, significance test or effect size reported here is affected; the qualification is to the reading of the absolute values, which should be understood as a single-class F1 rather than a macro average.
+
+\textbf{Label noise.} Automated CVE-to-commit linking via CVEfixes~\citep{Bhandari2021CVEfixes} trades precision for coverage relative to manual curation~\citep{Ponta2019Dataset}, injecting label noise~\citep{Morrison2015HotSOS}.
+
+\textbf{Architecture coverage.} The conference version rested entirely on phi-2. Section~\ref{sec:cross-arch} removes part of that exposure by replicating the core comparison on \texttt{Qwen2.5-Coder-1.5B}, and the outcome vindicates the concern: the ranking of the weaker strategies transfers, but Hybrid-CASR's forward-accuracy lead does not. Two decoders are still two decoders, however. Nothing here speaks to encoders such as CodeBERT~\citep{Feng2020CodeBERT}, to graph models~\citep{Zhou2019Devign,Cao2021BGNN4VD}, or to backbones past the single-GPU range, and the granularity sweep and the top-cluster equivalence of Section~\ref{sec:pairwise} were not re-run on the second backbone.
+
+\textbf{Rebuilt corpus.} The replication of Section~\ref{sec:cross-arch} uses a corpus rebuilt from NVD and GitHub, because the original patch archive was no longer recoverable. It deviates from the published per-window class counts by $-0.86\%$ overall (per-window median $-0.66\%$, worst case $4.6\%$), the shortfall being 414 upstream commits deleted since collection. This is close, but it is not the same corpus, and it is one of several simultaneous changes---together with \texttt{transformers}~4.35$\rightarrow$5.15 and \texttt{peft}~0.6$\rightarrow$0.20---that we did not disentangle. Their joint effect is visible: the phi-2 window-only anchor scores $0.7236$ under the replication against $0.651$ as published. All comparisons drawn in Section~\ref{sec:cross-arch} are therefore internal to the replication, where corpus, code, dependencies and hardware are held constant.
+
+\textbf{Replication breadth.} Only the two conditions carrying the central claim were run under three seeds; the phi-2 anchor, Replay-3P and OLoRA were run under one. CASR, Replay-1P, LB-CL, cumulative training and zero-shot were not re-run on the second backbone at all, for compute reasons, so the top-cluster equivalence established in Section~\ref{sec:pairwise} has been tested on one architecture only. The single-seed results are reported because their gaps exceed the measured seed spread by an order of magnitude, not because one seed is in general sufficient---as Section~\ref{sec:cross-arch} itself demonstrates.
+
+\textbf{Pretraining contamination.} Phi-2 was released in December 2023, so its pretraining corpus plausibly overlaps public repositories carrying 2018--2023 vulnerabilities. Such overlap could let the model recognise---rather than genuinely predict---some vulnerable code, inflating absolute performance and blurring memorisation against temporal generalisation. This threat is partly mitigated in relative terms, since \emph{all} strategies share the same backbone and any contamination affects them equally, so the \emph{comparison} between strategies remains meaningful even if the absolute numbers are optimistic. A cleaner design would use a backbone whose cutoff predates the evaluation span, or restrict testing to post-cutoff disclosures; we flag this as the most consequential limitation.
+
+\textbf{Input truncation.} Functions are truncated at 512 tokens, which affects $20.6\%$ of instances; the length distribution is long-tailed (p90 $=1273$ tokens, p99 on the order of $10^4$). Long functions are thus systematically presented to the model in part, and any vulnerability whose evidence lies beyond the cut is unreachable in principle. The truncation is identical across methods and backbones, so it does not bias the comparison, but it does place a ceiling on absolute performance that none of the strategies studied here can lift.
+
+\textbf{Language coverage.} The corpus is dominated by C/C++ and Java, so conclusions may not transfer to, say, dynamically-typed ecosystems with different vulnerability idioms.
+
+\subsection{Future Research Directions}
+\label{sec:disc-future}
+
+\noindent
+Several directions follow. First, the cross-architecture replication should be completed and widened: the five strategies not re-run on the second backbone should be, so that the top-cluster equivalence is tested rather than assumed to transfer, and the granularity flatness ($0.651$--$0.669$) deserves the same treatment. Our own results argue for how that should be done---differences of a few thousandths of F1 halved when we moved from one seed to three, so multi-seed reporting with explicit seed spread, rather than single-run point estimates, ought to be the default in this setting. A backbone family with several sizes would additionally let the retention-versus-scale observation of Section~\ref{sec:cross-arch} be tested properly, which our two-model design cannot do. Second, \emph{adaptive} segmentation---resizing windows in response to drift-detection signals~\citep{Hinder2024ConceptDrift}---could exploit the finding that granularity changes \emph{which} vulnerabilities are caught. Third, the payoff from selective replay invites richer selection criteria: gradient-based importance~\citep{Aljundi2019MIR}, diversity-aware sampling, or flexible knowledge organisation such as adapter fusion~\citep{Pfeiffer2021AdapterFusion}. Fourth, and most important given the contamination threat, the community needs evaluation protocols that approximate genuine zero-day conditions---through cross-family generalisation~\citep{Lu2021CodeXGLUE,Morrison2015HotSOS} and through backbones with verifiable pretraining cutoffs---so that reported gains can be trusted as prediction rather than recall.
+
+\subsection{Differences from the Conference Version}
+\label{sec:differences}
+
+\noindent
+This article extends our ICISSP paper~\citep{Dou2026ICISSP}. The conference experiments are reported unchanged; the extension adds new analysis of them, and---centrally---a new set of experiments on a second backbone. Together these enlarge the original by well over the required margin of new material. Concretely, the additions are as follows.
+
+First, the background is substantially expanded: a dedicated Related Work section (Section~\ref{sec:related}) now develops three literatures---learning-based vulnerability detection, continual learning for language models, and temporally-honest evaluation---that the conference version could only gesture at inline. Second, the Hybrid-CASR mechanism, previously described only in prose, is formalised as an explicit algorithm (Algorithm~\ref{alg:hybrid-casr}) with predictive-entropy scoring and an exact buffer partition. Third, we add a full pairwise significance analysis across all eight strategies with Holm--Bonferroni correction (Section~\ref{sec:pairwise}, Table~\ref{tab:pairwise}); this was absent from the conference version, which tested only Hybrid-CASR against a single baseline, and it materially refines the interpretation by showing that the four leading methods are statistically inseparable. Fourth, we introduce a stability-index treatment of the plasticity--stability trade-off (Section~\ref{sec:stability}, Table~\ref{tab:stability}), which resolves the resulting tie in favour of Hybrid-CASR on consistency grounds.
+
+Fifth, and most substantively, we add an entirely new experimental arm: a multi-seed cross-architecture replication on \texttt{Qwen2.5-Coder-1.5B} (protocol in Section~\ref{sec:replication}, results in Section~\ref{sec:cross-arch}, Tables~\ref{tab:cross-arch} and~\ref{tab:cross-arch-ibr}), together with the new research question RQ5 that motivates it. This is the one addition that could have contradicted the conference version, and in part it does: Hybrid-CASR's forward-accuracy lead does not reproduce on the second backbone, whereas its backward-retention advantage and the ordering of the weaker strategies do. We report that outcome as measured, and Section~\ref{sec:disc-interpretation} argues that it does not so much overturn the conference conclusion as locate it correctly---a lead that Section~\ref{sec:pairwise} had already shown to lie inside the top cluster's noise band is not one that should have been expected to survive a change of architecture. The replication also produced a finding with no counterpart in the conference version: lagged retention profiles distinguish knowledge consolidated in parameters from data merely rehearsed recently (Section~\ref{sec:disc-theory}).
+
+Sixth, the threats-to-validity discussion is broadened accordingly, with new treatments of pretraining contamination, the rebuilt corpus and its measured deviation from the published one, the breadth of the replication, input truncation, and the exact definition of the reported F1. Finally, the title, abstract and conclusions have been rewritten to reflect the shift in emphasis---from proposing a method toward establishing, with fuller statistics and a second architecture, what selective replay can and cannot be relied on to deliver under temporal drift. Tables and figures carried over from the conference version are marked as reproduced at each caption; all newly added tables are marked as such.
+
+%% ======================================================================
+\section{\uppercase{Conclusion}}
+\label{sec:conclusion}
+
+\noindent
+We asked whether continual learning can keep an LLM-based vulnerability detector useful as it is deployed across years of shifting code, and we answered it with a long-horizon, leakage-controlled study over 42 bi-monthly windows of CVEfixes data using a LoRA-tuned phi-2 backbone, extended here with a multi-seed replication on a second decoder. The picture that emerges is more nuanced than a single winning method. Selective, class-balanced replay---Hybrid-CASR---does reach the best mean forward F1 on phi-2 ($0.667$) and does so cheaply, running about $24\%$ more efficiently in F1-per-minute than single-window fine-tuning and a fraction of the cost of cumulative training. But the extended statistical analysis added here shows that its mean-F1 lead over the other strong replay methods is within noise once multiple testing is controlled; the four leading strategies form one statistically indistinguishable cluster.
+
+The cross-architecture replication then tells us which parts of this survive contact with a different model, and the answer is instructive precisely because it is mixed. On Qwen2.5-Coder-1.5B the forward-accuracy lead does not reproduce---$-0.006$, inside the seed-to-seed spread of both methods---while the backward-retention advantage holds at every lag and the ordering of the weaker strategies is unchanged. Read together with the significance analysis, the two results agree rather than conflict: a difference that sits inside a noise band on one architecture is not one that should be expected to transfer to another, and it was the retention effect, tied to what the replay buffer actually holds, that had a mechanism behind it. We therefore state the contribution of Hybrid-CASR as a \emph{trade}---measurably better retention at a forward cost indistinguishable from zero, together with the steadiest and among the cheapest operating points of the top cluster---rather than as an accuracy improvement. That is a smaller claim than the conference version's, and a considerably more durable one.
+
+Two further lessons generalise beyond this method. First, effect sizes of a few thousandths of F1 are not estimable from single runs: ours halved when replication went from one seed to three, which is reason enough to treat single-run comparisons at this scale, our own earlier one included, as provisional. Second, retention probed at a single short lag cannot distinguish consolidation from rehearsal---a fixed-horizon replay method held its ground inside its buffer window and collapsed by $0.25$ F1 immediately beyond it, while methods carrying adapter state forward decayed smoothly throughout. The granularity sweep adds a complementary note of robustness: one-month to twelve-month windows land within a $0.651$--$0.669$ band, so time scale changes \emph{which} vulnerabilities are caught more than \emph{how many}.
+
+For practitioners, the operational reading is deliberately sober. Forward performance in the $65$--$67\%$ range on the conference backbone, together with sharp drops during landscape-shifting windows, means these detectors belong in a decision-support role, with human verification, rather than as autonomous oracles. Teams with little ML capacity can reasonably run simple per-window fine-tuning; those for whom recurring vulnerability patterns matter---and who will still be running the model a year later---can adopt Hybrid-CASR for better retention at a steadier, cheaper operating point and no measurable accuracy cost. The main caveats---two decoder architectures and no encoder or graph model, a C/C++--and--Java-heavy corpus, a replication corpus rebuilt to within $0.86\%$ of the published one rather than identical to it, and possible pretraining contamination that inflates absolute scores while leaving between-method comparisons intact---mark the path forward: complete the replication across the remaining strategies and further backbones, pursue adaptive windowing, and build evaluation protocols that approximate true zero-day conditions. Robust temporal vulnerability detection remains an open problem, but this study maps, with fuller statistics and one more architecture than before, exactly where the current strategies stand.
+
+% \section*{\uppercase{Acknowledgements}}
+% [To be completed]
+
+\bibliographystyle{apalike}
+{\small
+\bibliography{example}}
+
+%% ======================================================================
+%% Add this entry to your example.bib (conference version, requirement 1):
+%%
+%% @inproceedings{Dou2026ICISSP,
+%%   author    = {Dou, Xuhui and Bahsi, Hayretdin and Guerra-Manzanares, Alejandro},
+%%   title     = {Enhancing Continual Learning for Software Vulnerability
+%%                Prediction: Addressing Catastrophic Forgetting via
+%%                Hybrid-Confidence-Aware Selective Replay for Temporal
+%%                LLM Fine-Tuning},
+%%   booktitle = {Proceedings of the 12th International Conference on
+%%                Information Systems Security and Privacy (ICISSP)},
+%%   year      = {2026},
+%%   publisher = {SciTePress}
+%% }
+%% ======================================================================
+
+\end{document}
