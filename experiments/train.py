@@ -62,6 +62,16 @@ def parse_args():
                    help="window width in months (1/2/3/6/12)")
     p.add_argument("--adapter", choices=["inherit", "fresh", "none"],
                    help="override the method's adapter policy")
+    p.add_argument("--replay",
+                   help="override the method's replay spec, e.g. "
+                        "uncertain-balanced:200+50. Buffer sizes were fixed on phi-2 "
+                        "and never re-tuned, so the second backbone runs at the first "
+                        "one's budget; this is how that gets tested. Use --tag with it, "
+                        "or the run lands on top of the untuned one in metrics.csv.")
+    p.add_argument("--tag",
+                   help="suffix appended to the method name in metrics.csv and to the "
+                        "run directory, so a re-tuned variant aggregates as its own "
+                        "method instead of merging with the published configuration")
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=2e-4)
@@ -225,6 +235,9 @@ def collect_lora_directions(model, history):
 def main():
     args = parse_args()
     spec = dict(METHODS[args.method])
+    if args.replay:
+        resolve_replay(args.replay, 2, ["a", "b", "c"])  # reject a bad spec now, not in window 3
+        spec["replay"] = args.replay
     adapter_policy = args.adapter or spec["adapter"]
 
     import numpy as np
@@ -261,7 +274,11 @@ def main():
     # backbones writes to one directory, and the second run overwrites the
     # first's adapters and config while the chain is still being read.
     model_tag = re.sub(r"[^0-9A-Za-z.-]+", "-", os.path.basename(args.model.rstrip("/")))
-    run = f"{args.method}_{model_tag}_g{args.granularity}m_seed{args.seed}"
+    # The label written to metrics.csv, not the registry key: a re-tuned variant
+    # has to aggregate as its own method, or it merges with the published one and
+    # the two configurations average together into a number that is neither.
+    method_label = f"{args.method}+{args.tag}" if args.tag else args.method
+    run = f"{method_label}_{model_tag}_g{args.granularity}m_seed{args.seed}"
     if args.adapter:
         run += f"_adapter-{args.adapter}"
     out_dir = os.path.join(args.out, run)
@@ -407,7 +424,7 @@ def main():
         def evaluate(ds, eval_window, direction):
             pred = trainer.predict(ds)
             m = compute_metrics(pred.label_ids, pred.predictions.argmax(-1))
-            metrics.write(method=args.method, model=model_tag, seed=args.seed,
+            metrics.write(method=method_label, model=model_tag, seed=args.seed,
                           granularity=args.granularity,
                           train_window=train_tag, eval_window=eval_window,
                           direction=direction, n_train=len(train_ds), n_replay=n_replay, **m)

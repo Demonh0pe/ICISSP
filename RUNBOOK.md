@@ -162,6 +162,36 @@ python experiments/train.py --method hybrid-casr --model Qwen/Qwen2.5-Coder-1.5B
   --data-dir $D --out runs/qwen
 ```
 
+已经跑完的用 `run_swap.sh`,结果见 `RESULTS.md`。
+
+### 5.5 缓冲区预算(回应"超参没为新骨干重调")
+
+论文 threats 里承认:缓冲区 100+25 是在 phi-2 上定的,Qwen 跑的是别人的最优点。
+这一步就是去测它。**只动缓冲区**,所以 window-only 的三种子基线可以直接复用,
+不用重跑——一次运行换一个对比。
+
+```bash
+bash run_tune.sh              # 阶梯,seed 42,两次运行
+```
+
+先看 seed 42 的探针再决定加不加种子:
+
+| 探针结果 | 下一步 |
+|---|---|
+| delta 转正 | `SEEDS="43 44" bash run_tune.sh b2x`,这是新结果 |
+| delta 收到 ~0 | 同上,"与零无法区分"的说法更硬 |
+| delta 更负 | **停**。这也是干净答案:缺口不是缓冲区太小,threats 里那句话有了证据 |
+
+出结果时把两个 metrics 一起喂进去,调过的会以 `hybrid-casr+b2x` 单独出现:
+
+```bash
+python analysis/aggregate_runs.py \
+  --metrics runs/swap/metrics.csv runs/tune/metrics.csv \
+  --out figures/tune --metric f1_binary_pos1_LEGACY
+```
+
+判据不是符号翻没翻,是**能不能超过种子间标准差 0.0066**。
+
 ---
 
 ## 步骤 6:出结果
