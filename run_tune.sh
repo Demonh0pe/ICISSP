@@ -13,8 +13,14 @@
 #   bash run_tune.sh                  # the ladder at seed 42
 #   SEEDS="43 44" bash run_tune.sh b2x   # add seeds to one variant
 #
-# Resumable: anything already in runs/tune/metrics.csv is skipped, so
-# re-launching after a disconnect picks up where it stopped.
+# Resumable at run granularity: a run whose full forward sweep is already in
+# runs/tune/metrics.csv is skipped. A run that died part-way restarts from its
+# first window -- train.py keeps no mid-run checkpoint, and a partial sweep is
+# not a result, so finishing it means starting it again.
+#
+# Both backbones are cached after the first run, but transformers still calls
+# huggingface.co to revalidate on every launch, which hangs on a slow link.
+# Export HF_HUB_OFFLINE=1 to skip that call once the weights are local.
 #
 # Read the probe before spending more. Three outcomes, three decisions:
 #   delta goes positive  -> add seeds 43/44, it becomes a result
@@ -44,16 +50,31 @@ RUNS=(
 mkdir -p "$OUT"
 METRICS="$OUT/metrics.csv"
 
+# Skip only a run that FINISHED. Keying on "has any row" would strand a run
+# that died in window 3: it would be skipped on every relaunch and never
+# complete. The bar is the full forward sweep -- one evaluation per window
+# transition, i.e. one fewer than the number of window files.
 done_already() {
   [ -f "$METRICS" ] || return 1
-  python - "$METRICS" "$1" "$2" "$3" <<'EOF'
-import csv, sys
-path, method, model, seed = sys.argv[1:5]
+  python - "$METRICS" "$1" "$2" "$3" "$DATA" <<'EOF'
+import csv, glob, os, sys
+path, method, model, seed, data_dir = sys.argv[1:6]
+want = len(glob.glob(os.path.join(data_dir, "*.jsonl"))) - 1
+if want < 1:
+    print(f"  cannot count windows in {data_dir}; not skipping")
+    sys.exit(1)
+have = 0
 with open(path, newline="") as fh:
+    seen = set()
     for row in csv.DictReader(fh):
         if (row.get("method") == method and row.get("model") == model
-                and row.get("seed") == seed):
-            sys.exit(0)
+                and row.get("seed") == seed and row.get("direction") == "forward"):
+            seen.add(row.get("eval_window"))
+    have = len(seen)
+if have >= want:
+    sys.exit(0)
+if have:
+    print(f"  {have}/{want} windows present -- restarting this run from the top")
 sys.exit(1)
 EOF
 }
